@@ -13,7 +13,12 @@ from upstream.models import (
     Usage,
     UserMessage,
 )
-from upstream.providers import MockProvider, ModelProvider, OpenAICompatibleProvider
+from upstream.providers import (
+    MockProvider,
+    ModelProvider,
+    OpenAICodexProvider,
+    OpenAICompatibleProvider,
+)
 from upstream.registry import ModelInfo, ModelRegistry, ProviderInfo, ResolvedModel
 from upstream.types import AgentToolResult, ToolSpec
 
@@ -30,6 +35,7 @@ __all__ = [
     "ModelInfo",
     "ModelProvider",
     "ModelRegistry",
+    "OpenAICodexProvider",
     "OpenAICompatibleProvider",
     "ProviderInfo",
     "ResolvedModel",

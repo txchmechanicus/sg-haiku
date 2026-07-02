@@ -151,6 +151,51 @@ async def test_read_blocks_workspace_escape(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_read_returns_image_content_for_png(tmp_path: Path) -> None:
+    from io import BytesIO
+
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", (10, 10), color="red").save(buffer, format="PNG")
+    (tmp_path / "pic.png").write_bytes(buffer.getvalue())
+    registry = default_registry(tmp_path)
+
+    result, is_error = await registry.run(
+        ToolCall(id="1", name="read", arguments={"path": "pic.png"})
+    )
+
+    assert is_error is False
+    assert result.content[0].type == "text"
+    assert "pic.png" in result.content[0].text
+    assert result.content[1].type == "image"
+    assert result.content[1].mimeType == "image/png"
+    assert result.content[1].data
+
+
+@pytest.mark.asyncio
+async def test_read_resizes_oversized_image(tmp_path: Path) -> None:
+    import base64
+    from io import BytesIO
+
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", (3000, 2500), color="blue").save(buffer, format="PNG")
+    (tmp_path / "big.png").write_bytes(buffer.getvalue())
+    registry = default_registry(tmp_path)
+
+    result, is_error = await registry.run(
+        ToolCall(id="1", name="read", arguments={"path": "big.png"})
+    )
+
+    assert is_error is False
+    decoded = Image.open(BytesIO(base64.b64decode(result.content[1].data)))
+    assert decoded.width <= 2000
+    assert decoded.height <= 2000
+
+
+@pytest.mark.asyncio
 async def test_bash_runs_command(tmp_path: Path) -> None:
     registry = default_registry(tmp_path)
 

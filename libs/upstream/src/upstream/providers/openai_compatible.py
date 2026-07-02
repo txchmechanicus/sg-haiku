@@ -17,6 +17,7 @@ from upstream.models import (
     Usage,
 )
 from upstream.providers.base import ModelProvider
+from upstream.providers.sse import iter_sse_data
 from upstream.types import ToolSpec
 
 
@@ -38,6 +39,7 @@ class OpenAICompatibleProvider(ModelProvider):
         timeout: float = 60.0,
         transport: httpx.AsyncBaseTransport | None = None,
         headers: dict[str, str] | None = None,
+        supports_images: bool = True,
     ) -> None:
         self.model = model
         self.api_key = api_key
@@ -45,6 +47,7 @@ class OpenAICompatibleProvider(ModelProvider):
         self.timeout = timeout
         self.transport = transport
         self.headers = headers or {}
+        self.supports_images = supports_images
 
     async def stream(
         self,
@@ -85,7 +88,7 @@ class OpenAICompatibleProvider(ModelProvider):
                     json=payload,
                 ) as response:
                     response.raise_for_status()
-                    async for data in _iter_sse_data(response):
+                    async for data in iter_sse_data(response):
                         if data == "[DONE]":
                             break
                         chunk = json.loads(data)
@@ -254,9 +257,41 @@ class OpenAICompatibleProvider(ModelProvider):
         *,
         system_prompt: str | None,
     ) -> list[dict[str, Any]]:
-        formatted = [self._format_message(message) for message in messages]
+        formatted: list[dict[str, Any]] = []
         if system_prompt:
-            return [{"role": "system", "content": system_prompt}, *formatted]
+            formatted.append({"role": "system", "content": system_prompt})
+
+        pending_images: list[dict[str, Any]] = []
+
+        def flush_images() -> None:
+            if pending_images:
+                formatted.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Attached image(s) from tool result:"},
+                            *pending_images,
+                        ],
+                    }
+                )
+                pending_images.clear()
+
+        for message in messages:
+            if message.role == "toolResult":
+                formatted.append(self._format_message(message))
+                if self.supports_images:
+                    pending_images.extend(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{part.mimeType};base64,{part.data}"},
+                        }
+                        for part in message.content
+                        if isinstance(part, ImageContent)
+                    )
+                continue
+            flush_images()
+            formatted.append(self._format_message(message))
+        flush_images()
         return formatted
 
     def _format_tool(self, tool: ToolSpec) -> dict[str, Any]:
@@ -274,13 +309,6 @@ class OpenAICompatibleProvider(ModelProvider):
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
-
-
-async def _iter_sse_data(response: httpx.Response) -> AsyncIterator[str]:
-    async for line in response.aiter_lines():
-        if not line or line.startswith(":") or not line.startswith("data:"):
-            continue
-        yield line.removeprefix("data:").strip()
 
 
 def _usage_from_openai(usage: dict[str, Any]) -> Usage:

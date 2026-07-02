@@ -127,7 +127,8 @@ def test_registry_applies_model_overrides(tmp_path: Path) -> None:
     assert resolved.model.maxTokens == 123
 
 
-def test_provider_config_builds_custom_openai_compatible_model(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_provider_config_builds_custom_openai_compatible_model(tmp_path: Path) -> None:
     config = write_json(
         tmp_path / "models.json",
         {
@@ -142,7 +143,7 @@ def test_provider_config_builds_custom_openai_compatible_model(tmp_path: Path) -
         },
     )
 
-    provider = ProviderConfig(
+    provider = await ProviderConfig(
         model="local/llama",
         models_config_paths=[config],
     ).build()

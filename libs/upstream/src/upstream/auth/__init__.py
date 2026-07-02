@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import stat
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+from upstream.oauth import OAuthTokens
 
 DEFAULT_AUTH_FILE = Path.home() / ".haiku" / "auth.json"
 
@@ -57,12 +63,60 @@ class AuthStorage:
             return credential.key
         return None
 
+    async def get_oauth_access_token(
+        self,
+        provider: str,
+        *,
+        refresh: Callable[[str], Awaitable[OAuthTokens]] | None = None,
+    ) -> str | None:
+        """Returns a valid OAuth access token, refreshing (and persisting) it if expired."""
+        credential = self.get(provider)
+        if not isinstance(credential, OAuthCredential):
+            return None
+        expired = credential.expiresAt is not None and credential.expiresAt <= int(time.time())
+        if not expired or refresh is None or not credential.refreshToken:
+            return credential.accessToken
+        with self._locked():
+            # Re-read under the lock in case another process already refreshed.
+            latest = self.get(provider)
+            if isinstance(latest, OAuthCredential):
+                still_expired = (
+                    latest.expiresAt is not None and latest.expiresAt <= int(time.time())
+                )
+                if not still_expired:
+                    return latest.accessToken
+                credential = latest
+            assert credential.refreshToken is not None
+            tokens = await refresh(credential.refreshToken)
+            self.set_oauth_credential(provider, tokens)
+            return tokens.access_token
+
+    @contextlib.contextmanager
+    def _locked(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        with lock_path.open("a+") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+
     def get(self, provider: str) -> Credential | None:
         return self._read().providers.get(provider)
 
     def set_api_key(self, provider: str, key: str) -> None:
         data = self._read()
         data.providers[provider] = ApiKeyCredential(key=key)
+        self._write(data)
+
+    def set_oauth_credential(self, provider: str, tokens: OAuthTokens) -> None:
+        data = self._read()
+        data.providers[provider] = OAuthCredential(
+            accessToken=tokens.access_token,
+            refreshToken=tokens.refresh_token,
+            expiresAt=tokens.expires_at,
+        )
         self._write(data)
 
     def remove(self, provider: str) -> bool:
@@ -139,6 +193,10 @@ class MemoryAuthStorage(AuthStorage):
 
     def _write(self, data: AuthFile) -> None:
         self._data = data.model_copy(deep=True)
+
+    @contextlib.contextmanager
+    def _locked(self):
+        yield
 
 
 def redact_secret(value: str | None) -> str:

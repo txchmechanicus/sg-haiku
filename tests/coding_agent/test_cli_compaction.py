@@ -130,7 +130,10 @@ def test_cli_injects_compaction_summary_as_system_message(tmp_path: Path, monkey
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(ProviderConfig, "context_window", lambda self: 100)
     provider = _CapturingProvider()
-    monkeypatch.setattr(ProviderConfig, "build", lambda self: provider)
+    async def _build(self):
+        return provider
+
+    monkeypatch.setattr(ProviderConfig, "build", _build)
     session_path = tmp_path / "session.jsonl"
     _seed_session(session_path)
 

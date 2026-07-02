@@ -4,7 +4,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from upstream.auth import AuthStorage, resolve_config_value
-from upstream.providers import MockProvider, ModelProvider, OpenAICompatibleProvider
+from upstream.providers import (
+    MockProvider,
+    ModelProvider,
+    OpenAICodexProvider,
+    OpenAICompatibleProvider,
+    oauth_openai_codex,
+)
+from upstream.providers.openai_codex import DEFAULT_BASE_URL as CODEX_DEFAULT_BASE_URL
 from upstream.registry import ModelRegistry
 
 
@@ -17,7 +24,7 @@ class ProviderConfig:
     models_config_paths: list[Path] | None = None
     auth_file: Path | None = None
 
-    def build(self) -> ModelProvider:
+    async def build(self) -> ModelProvider:
         if self.model is None:
             return MockProvider()
         registry = ModelRegistry.load(self.models_config_paths)
@@ -43,10 +50,31 @@ class ProviderConfig:
                 api_key=api_key,
                 base_url=self.base_url or resolved.model.baseUrl or resolved.provider.baseUrl or "",
                 headers=resolved.provider.headers,
+                supports_images="image" in resolved.model.input,
+            )
+        if resolved.provider.api == "openai-codex":
+            auth = AuthStorage(path=self.auth_file)
+            access_token = await auth.get_oauth_access_token(
+                resolved.provider.id, refresh=oauth_openai_codex.refresh
+            )
+            if not access_token:
+                raise ValueError(
+                    f"No OAuth login found for {resolved.provider.id}. "
+                    f"Run `haiku auth login {resolved.provider.id}` first."
+                )
+            return OpenAICodexProvider(
+                model=resolved.model.id,
+                access_token=access_token,
+                base_url=(
+                    self.base_url
+                    or resolved.model.baseUrl
+                    or resolved.provider.baseUrl
+                    or CODEX_DEFAULT_BASE_URL
+                ),
             )
         raise ValueError(
             f"Unsupported provider api: {resolved.provider.api!r}. "
-            f"Supported: openai-completions."
+            f"Supported: openai-completions, openai-codex."
         )
 
     def model_info(self) -> tuple[str, str]:

@@ -9,9 +9,11 @@ import re
 from pathlib import Path
 from typing import Any
 
+from upstream.models import ImageContent, TextContent
 from upstream.types import AgentToolResult
 
 from coding_agent.tools.core import Tool, ToolRegistry
+from coding_agent.tools.images import read_image_content, sniff_image_mime_type
 
 MAX_OUTPUT_CHARS = 20_000
 MAX_READ_LINES = 2_000
@@ -125,6 +127,20 @@ def _read_tool(cwd: Path) -> Tool:
             raise ValueError(f"File does not exist: {_display_path(root, path)}")
         if not path.is_file():
             raise ValueError(f"Path is not a file: {_display_path(root, path)}")
+
+        mime_type = sniff_image_mime_type(path)
+        if mime_type is not None:
+            data, final_mime_type = read_image_content(path, mime_type)
+            note = f"[Image: {_display_path(root, path)}]"
+            return (
+                AgentToolResult(
+                    content=[
+                        TextContent(text=note),
+                        ImageContent(data=data, mimeType=final_mime_type),
+                    ]
+                ),
+                False,
+            )
 
         text = path.read_text(encoding="utf-8", errors="replace")
         lines = text.split("\n")

@@ -256,6 +256,75 @@ def test_openai_compatible_formats_tool_result_message() -> None:
     }
 
 
+def test_openai_compatible_batches_tool_result_images_into_trailing_user_message() -> None:
+    provider = OpenAICompatibleProvider(model="gpt-test", api_key="test-key")
+    tool_result = ToolResultMessage(
+        toolCallId="call-1",
+        toolName="read",
+        content=[
+            TextContent(text="[Image: pic.png]"),
+            ImageContent(data="abc", mimeType="image/png"),
+        ],
+        isError=False,
+        timestamp=123,
+    )
+
+    formatted = provider._format_messages(
+        [UserMessage(content="look at this", timestamp=1), tool_result],
+        system_prompt=None,
+    )
+
+    assert formatted[-1] == {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Attached image(s) from tool result:"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        ],
+    }
+
+
+def test_openai_compatible_drops_tool_result_images_when_model_lacks_vision() -> None:
+    provider = OpenAICompatibleProvider(model="gpt-test", api_key="test-key", supports_images=False)
+    tool_result = ToolResultMessage(
+        toolCallId="call-1",
+        toolName="read",
+        content=[
+            TextContent(text="[Image: pic.png]"),
+            ImageContent(data="abc", mimeType="image/png"),
+        ],
+        isError=False,
+        timestamp=123,
+    )
+
+    formatted = provider._format_messages([tool_result], system_prompt=None)
+
+    assert all(entry.get("role") != "user" for entry in formatted)
+
+
+def test_openai_compatible_batches_images_from_consecutive_tool_results() -> None:
+    provider = OpenAICompatibleProvider(model="gpt-test", api_key="test-key")
+    first = ToolResultMessage(
+        toolCallId="call-1",
+        toolName="read",
+        content=[TextContent(text="a"), ImageContent(data="aaa", mimeType="image/png")],
+        isError=False,
+        timestamp=1,
+    )
+    second = ToolResultMessage(
+        toolCallId="call-2",
+        toolName="read",
+        content=[TextContent(text="b"), ImageContent(data="bbb", mimeType="image/png")],
+        isError=False,
+        timestamp=2,
+    )
+
+    formatted = provider._format_messages([first, second], system_prompt=None)
+
+    user_messages = [entry for entry in formatted if entry.get("role") == "user"]
+    assert len(user_messages) == 1
+    assert len(user_messages[0]["content"]) == 3  # text label + 2 images
+
+
 def test_openai_compatible_formats_system_message() -> None:
     provider = OpenAICompatibleProvider(model="gpt-test", api_key="test-key")
     message = SystemMessage(content="compacted summary", timestamp=123)

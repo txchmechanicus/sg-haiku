@@ -65,11 +65,12 @@ def test_memory_auth_storage_behaves_like_file_storage() -> None:
     assert storage.has_auth("provider") is False
 
 
-def test_provider_config_uses_stored_key(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_provider_config_uses_stored_key(tmp_path: Path) -> None:
     auth_file = tmp_path / "auth.json"
     AuthStorage(path=auth_file).set_api_key("openai-compatible", "stored-key")
 
-    provider = ProviderConfig(
+    provider = await ProviderConfig(
         provider="openai-compatible",
         model="gpt-4o-mini",
         auth_file=auth_file,
@@ -79,11 +80,12 @@ def test_provider_config_uses_stored_key(tmp_path: Path) -> None:
     assert provider.api_key == "stored-key"
 
 
-def test_provider_config_explicit_key_wins_over_stored_key(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_provider_config_explicit_key_wins_over_stored_key(tmp_path: Path) -> None:
     auth_file = tmp_path / "auth.json"
     AuthStorage(path=auth_file).set_api_key("openai-compatible", "stored-key")
 
-    provider = ProviderConfig(
+    provider = await ProviderConfig(
         provider="openai-compatible",
         model="gpt-4o-mini",
         api_key="explicit-key",
@@ -94,14 +96,15 @@ def test_provider_config_explicit_key_wins_over_stored_key(tmp_path: Path) -> No
     assert provider.api_key == "explicit-key"
 
 
-def test_missing_key_error_does_not_leak_other_secret(
+@pytest.mark.asyncio
+async def test_missing_key_error_does_not_leak_other_secret(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OTHER_SECRET", "do-not-leak")
 
     with pytest.raises(ValueError) as exc_info:
-        ProviderConfig(
+        await ProviderConfig(
             provider="openai-compatible",
             model="gpt-4o-mini",
             auth_file=tmp_path / "missing.json",
@@ -110,6 +113,59 @@ def test_missing_key_error_does_not_leak_other_secret(
     message = str(exc_info.value)
     assert "OPENAI_API_KEY" in message
     assert "do-not-leak" not in message
+
+
+@pytest.mark.asyncio
+async def test_get_oauth_access_token_returns_stored_token_when_not_expired(
+    tmp_path: Path,
+) -> None:
+    from upstream.oauth import OAuthTokens
+
+    storage = AuthStorage(path=tmp_path / "auth.json")
+    storage.set_oauth_credential(
+        "openai-codex",
+        OAuthTokens(access_token="access-1", refresh_token="refresh-1", expires_at=9_999_999_999),
+    )
+
+    async def _refresh(refresh_token: str):
+        raise AssertionError("refresh should not be called when token is not expired")
+
+    token = await storage.get_oauth_access_token("openai-codex", refresh=_refresh)
+
+    assert token == "access-1"
+
+
+@pytest.mark.asyncio
+async def test_get_oauth_access_token_refreshes_when_expired(tmp_path: Path) -> None:
+    from upstream.oauth import OAuthTokens
+
+    storage = AuthStorage(path=tmp_path / "auth.json")
+    storage.set_oauth_credential(
+        "openai-codex",
+        OAuthTokens(access_token="stale", refresh_token="refresh-1", expires_at=1),
+    )
+    calls: list[str] = []
+
+    async def _refresh(refresh_token: str) -> OAuthTokens:
+        calls.append(refresh_token)
+        return OAuthTokens(
+            access_token="fresh", refresh_token="refresh-2", expires_at=9_999_999_999
+        )
+
+    token = await storage.get_oauth_access_token("openai-codex", refresh=_refresh)
+
+    assert token == "fresh"
+    assert calls == ["refresh-1"]
+    persisted = storage.get("openai-codex")
+    assert persisted.accessToken == "fresh"
+    assert persisted.refreshToken == "refresh-2"
+
+
+@pytest.mark.asyncio
+async def test_get_oauth_access_token_returns_none_for_unknown_provider(tmp_path: Path) -> None:
+    storage = AuthStorage(path=tmp_path / "auth.json")
+
+    assert await storage.get_oauth_access_token("openai-codex") is None
 
 
 def test_resolve_config_value_reads_env_and_rejects_commands(

@@ -22,6 +22,7 @@ from agent.sessions import (
 from rich.console import Console
 from upstream.auth import DEFAULT_AUTH_FILE, AuthStorage, redact_secret
 from upstream.models import AssistantMessage, SystemMessage, TextContent
+from upstream.providers import oauth_openai_codex
 from upstream.registry import ModelRegistry
 
 from coding_agent.config import ProviderConfig
@@ -336,7 +337,53 @@ def auth_status(
     if getattr(credential, "type", None) == "api_key":
         console.print(f"{provider}: api_key {redact_secret(getattr(credential, 'key', None))}")
         return
+    if getattr(credential, "type", None) == "oauth":
+        expires_at = getattr(credential, "expiresAt", None)
+        console.print(f"{provider}: oauth (expires at {expires_at})")
+        return
     console.print(f"{provider}: {credential.type}")
+
+
+_OAUTH_PROVIDERS = {"openai-codex": oauth_openai_codex}
+
+
+@auth_app.command("login")
+def auth_login(
+    provider: Annotated[str, typer.Argument(help="Provider id (e.g. openai-codex).")],
+    device_code: Annotated[
+        bool,
+        typer.Option("--device-code", help="Use device-code login (for headless sessions)."),
+    ] = False,
+    auth_file: Annotated[
+        Path,
+        typer.Option("--auth-file", help="Path to auth JSON file."),
+    ] = DEFAULT_AUTH_FILE,
+) -> None:
+    """Log in to a provider via OAuth."""
+    module = _OAUTH_PROVIDERS.get(provider)
+    if module is None:
+        supported = ", ".join(sorted(_OAUTH_PROVIDERS))
+        raise typer.BadParameter(
+            f"OAuth login is not supported for provider: {provider!r}. Supported: {supported}."
+        )
+
+    async def _login():
+        if device_code:
+            def _on_prompt(verification_uri: str, user_code: str) -> None:
+                console.print(f"Go to {verification_uri} and enter code: {user_code}")
+
+            return await module.login_with_device_code(on_prompt=_on_prompt)
+        console.print("Opening your browser to log in...")
+        return await module.login_with_browser()
+
+    try:
+        tokens = asyncio.run(_login())
+    except Exception as exc:
+        error_console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(2) from exc
+
+    AuthStorage(path=auth_file).set_oauth_credential(provider, tokens)
+    console.print(f"Logged in to {provider}.")
 
 
 @app.command("compact")
@@ -401,16 +448,17 @@ def compact_session(
             models_config_paths=models_config,
             auth_file=auth_file,
         )
-        model_provider = config.build()
-        result = asyncio.run(
-            compact(
+        async def _build_and_compact():
+            model_provider = await config.build()
+            return await compact(
                 model_provider,
                 list(loaded.entry_refs),
                 previous_summary=loaded.compaction_summary,
                 keep_recent_tokens=compaction_keep_tokens,
                 provided_summary=summary,
             )
-        )
+
+        result = asyncio.run(_build_and_compact())
         manager = SessionManager.create(
             explicit_path=loaded.path,
             session_id=loaded.session_id,
@@ -461,7 +509,7 @@ async def _run(
         tools=tools,
         exclude_tools=exclude_tools,
     )
-    agent = Agent(provider=config.build(), tools=registry)
+    agent = Agent(provider=await config.build(), tools=registry)
     initial_entries, session, compaction_summary, compaction_details = _build_session_manager(
         session_path=session_path,
         session_dir=session_dir,

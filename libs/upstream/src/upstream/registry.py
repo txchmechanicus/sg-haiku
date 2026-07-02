@@ -92,6 +92,27 @@ class ModelRegistry:
                     maxTokens=max_tokens,
                 )
             )
+
+        registry.add_provider(
+            ProviderInfo(
+                id="openai-codex",
+                name="OpenAI Codex (ChatGPT OAuth)",
+                api="openai-codex",
+                baseUrl="https://chatgpt.com/backend-api",
+            )
+        )
+        registry.add_model(
+            ModelInfo(
+                id="gpt-5.5",
+                name="gpt-5.5",
+                api="openai-codex",
+                provider="openai-codex",
+                baseUrl="https://chatgpt.com/backend-api",
+                input=["text", "image"],
+                contextWindow=272000,
+                maxTokens=128000,
+            )
+        )
         return registry
 
     @classmethod
