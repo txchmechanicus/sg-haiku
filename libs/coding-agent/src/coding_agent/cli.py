@@ -8,6 +8,7 @@ from typing import Annotated
 import typer
 import typer.core
 from agent import Agent
+from agent.compaction import compact, estimate_context_tokens, should_compact
 from agent.context import PromptContextBuilder
 from agent.events import AgentEvent
 from agent.sessions import (
@@ -185,6 +186,25 @@ def main(
         str | None,
         typer.Option("--fork", help="Create a new session from an existing session."),
     ] = None,
+    no_compaction: Annotated[
+        bool,
+        typer.Option("--no-compaction", help="Disable automatic session compaction."),
+    ] = False,
+    compaction_reserve_tokens: Annotated[
+        int,
+        typer.Option(
+            "--compaction-reserve-tokens",
+            help="Trigger compaction once fewer than this many tokens remain in the "
+            "context window.",
+        ),
+    ] = 4096,
+    compaction_keep_tokens: Annotated[
+        int,
+        typer.Option(
+            "--compaction-keep-tokens",
+            help="Approximate number of recent tokens to keep uncompacted.",
+        ),
+    ] = 8000,
 ) -> None:
     if ctx.invoked_subcommand is not None:
         return
@@ -247,6 +267,9 @@ def main(
                 no_builtin_tools=no_builtin_tools,
                 tools=_parse_tool_list(tools),
                 exclude_tools=_parse_tool_list(exclude_tools),
+                compaction_enabled=not no_compaction,
+                compaction_reserve_tokens=compaction_reserve_tokens,
+                compaction_keep_tokens=compaction_keep_tokens,
             )
         )
     except ValueError as exc:
@@ -315,6 +338,85 @@ def auth_status(
     console.print(f"{provider}: {credential.type}")
 
 
+@app.command("compact")
+def compact_session(
+    session_ref: Annotated[str, typer.Argument(help="Session file path or id.")],
+    session_dir: Annotated[
+        Path,
+        typer.Option("--session-dir", help="Directory to search for sessions."),
+    ] = DEFAULT_SESSION_DIR,
+    provider: Annotated[
+        str | None,
+        typer.Option("--provider", help="Model provider."),
+    ] = None,
+    model: Annotated[
+        str | None, typer.Option("--model", help="Model name.")
+    ] = None,
+    base_url: Annotated[
+        str | None,
+        typer.Option("--base-url", help="OpenAI-compatible API base URL."),
+    ] = None,
+    api_key: Annotated[
+        str | None,
+        typer.Option("--api-key", help="API key. Falls back to OPENAI_API_KEY."),
+    ] = None,
+    auth_file: Annotated[
+        Path | None,
+        typer.Option("--auth-file", help="Path to auth JSON file."),
+    ] = None,
+    models_config: Annotated[
+        list[Path] | None,
+        typer.Option("--models-config", help="Read models from this JSON file."),
+    ] = None,
+    compaction_keep_tokens: Annotated[
+        int,
+        typer.Option(
+            "--compaction-keep-tokens",
+            help="Approximate number of recent tokens to keep uncompacted.",
+        ),
+    ] = 8000,
+) -> None:
+    """Manually compact a session, without running a new prompt turn."""
+    if model == "mock" or provider == "mock":
+        raise typer.BadParameter("mock is a dev-only provider and cannot be selected via CLI.")
+
+    try:
+        loaded = resolve_session_reference(session_ref, session_dir)
+        config = ProviderConfig(
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            models_config_paths=models_config,
+            auth_file=auth_file,
+        )
+        model_provider = config.build()
+        result = asyncio.run(
+            compact(
+                model_provider,
+                list(loaded.messages),
+                previous_summary=loaded.compaction_summary,
+                keep_recent_tokens=compaction_keep_tokens,
+            )
+        )
+        manager = SessionManager.create(
+            explicit_path=loaded.path,
+            session_id=loaded.session_id,
+            cwd=Path.cwd(),
+            append=True,
+            header=loaded.header,
+        )
+        manager.record_compaction(
+            summary=result.summary,
+            first_kept_entry_id=f"entry-{result.cut_index}",
+            tokens_before=result.tokens_before,
+        )
+        console.print(result.summary)
+    except ValueError as exc:
+        error_console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(2) from exc
+
+
 async def _run(
     prompt: str,
     config: ProviderConfig,
@@ -334,6 +436,9 @@ async def _run(
     no_builtin_tools: bool,
     tools: set[str] | None,
     exclude_tools: set[str] | None,
+    compaction_enabled: bool = True,
+    compaction_reserve_tokens: int = 4096,
+    compaction_keep_tokens: int = 8000,
 ) -> None:
     registry = _build_tool_registry(
         no_builtin_tools=no_builtin_tools,
@@ -341,7 +446,7 @@ async def _run(
         exclude_tools=exclude_tools,
     )
     agent = Agent(provider=config.build(), tools=registry)
-    initial_messages, session = _build_session_manager(
+    initial_messages, session, compaction_summary = _build_session_manager(
         session_path=session_path,
         session_dir=session_dir,
         session_id=session_id,
@@ -359,12 +464,38 @@ async def _run(
     if stream_json:
         print(json.dumps(session.header(), ensure_ascii=False))
 
+    context_window = config.context_window()
+    if compaction_enabled and context_window is not None:
+        context_tokens = estimate_context_tokens(initial_messages)
+        if should_compact(context_tokens, context_window, compaction_reserve_tokens):
+            result = await compact(
+                agent.provider,
+                initial_messages,
+                previous_summary=compaction_summary,
+                keep_recent_tokens=compaction_keep_tokens,
+            )
+            compaction_record = session.record_compaction(
+                summary=result.summary,
+                first_kept_entry_id=f"entry-{result.cut_index}",
+                tokens_before=result.tokens_before,
+            )
+            initial_messages = initial_messages[result.cut_index :]
+            compaction_summary = result.summary
+            if stream_json:
+                print(json.dumps(compaction_record, ensure_ascii=False))
+
+    effective_system_prompt = system_prompt or agent.system_prompt
+    if compaction_summary:
+        effective_system_prompt = (
+            f"{effective_system_prompt}\n\nCompacted conversation summary:\n{compaction_summary}"
+        )
+
     had_error = False
     events: list[AgentEvent] = []
     async for event in agent.run(
         prompt,
         initial_messages=initial_messages,
-        system_prompt=system_prompt,
+        system_prompt=effective_system_prompt,
         use_tools=use_tools,
     ):
         events.append(event)
@@ -403,7 +534,7 @@ def _build_session_manager(
     continue_session: bool,
     resume: str | None,
     fork: str | None,
-) -> tuple[list[Message], SessionManager]:
+) -> tuple[list[Message], SessionManager, str | None]:
     mode_count = sum(bool(value) for value in (continue_session, resume, fork))
     if mode_count > 1:
         raise ValueError("Use only one of --continue, --resume, or --fork.")
@@ -444,7 +575,11 @@ def _build_session_manager(
         append=append,
         header=header,
     )
-    return (list(loaded.messages) if loaded is not None else []), manager
+    return (
+        list(loaded.messages) if loaded is not None else [],
+        manager,
+        loaded.compaction_summary if loaded is not None else None,
+    )
 
 
 def _build_tool_registry(

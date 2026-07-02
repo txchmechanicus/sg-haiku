@@ -183,3 +183,50 @@ def test_load_session_ignores_model_change_and_thinking_level_change_entries(
     ]
     assert len(loaded.messages) == 1
     assert loaded.messages[0].role == "user"
+
+
+def test_load_session_applies_latest_compaction_entry(tmp_path: Path) -> None:
+    path = tmp_path / "session.jsonl"
+    manager = SessionManager.create(explicit_path=path, session_id="session-1", cwd=tmp_path)
+    manager.record_message(UserMessage(content="one", timestamp=1))
+    manager.record_message(
+        AssistantMessage(content=[TextContent(text="reply one")], stopReason="stop", timestamp=2)
+    )
+    manager.record_message(UserMessage(content="two", timestamp=3))
+    manager.record_compaction(
+        summary="Summary up to message 2.",
+        first_kept_entry_id="entry-2",
+        tokens_before=1000,
+    )
+    manager.record_message(
+        AssistantMessage(content=[TextContent(text="reply two")], stopReason="stop", timestamp=4)
+    )
+
+    loaded = load_session(path)
+
+    assert loaded.compaction_summary == "Summary up to message 2."
+    assert [message.role for message in loaded.messages] == ["user", "assistant"]
+    assert loaded.messages[0].content == "two"
+
+
+def test_load_session_uses_only_the_last_compaction_entry(tmp_path: Path) -> None:
+    path = tmp_path / "session.jsonl"
+    manager = SessionManager.create(explicit_path=path, session_id="session-1", cwd=tmp_path)
+    for i in range(4):
+        manager.record_message(UserMessage(content=f"msg-{i}", timestamp=i))
+    manager.record_compaction(
+        summary="First summary.",
+        first_kept_entry_id="entry-1",
+        tokens_before=500,
+    )
+    manager.record_message(UserMessage(content="msg-4", timestamp=4))
+    manager.record_compaction(
+        summary="Second summary.",
+        first_kept_entry_id="entry-3",
+        tokens_before=800,
+    )
+
+    loaded = load_session(path)
+
+    assert loaded.compaction_summary == "Second summary."
+    assert [message.content for message in loaded.messages] == ["msg-3", "msg-4"]

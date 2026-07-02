@@ -24,6 +24,7 @@ class LoadedSession:
     path: Path
     header: dict[str, object]
     messages: list[Message]
+    compaction_summary: str | None = None
 
     @property
     def session_id(self) -> str:
@@ -162,6 +163,7 @@ def load_session(path: Path) -> LoadedSession:
 
     header: dict[str, object] | None = None
     messages: list[Message] = []
+    last_compaction: dict[str, object] | None = None
     for line_number, line in enumerate(resolved_path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
@@ -189,13 +191,40 @@ def load_session(path: Path) -> LoadedSession:
                 raise ValueError(f"Session event entry has no event: {path}")
             _AGENT_EVENT_ADAPTER.validate_python(entry["event"])
             continue
+        if entry_type == "compaction":
+            last_compaction = entry
+            continue
 
     if header is None:
         raise ValueError(f"Session file has no session header: {path}")
     if "id" not in header:
         raise ValueError(f"Session header has no id: {path}")
     validate_session_id(str(header["id"]))
-    return LoadedSession(path=resolved_path, header=header, messages=messages)
+
+    compaction_summary: str | None = None
+    if last_compaction is not None:
+        first_kept_entry_id = str(last_compaction.get("firstKeptEntryId", ""))
+        cut_index = _parse_entry_index(first_kept_entry_id)
+        if cut_index is not None:
+            messages = messages[cut_index:]
+        compaction_summary = str(last_compaction.get("summary", ""))
+
+    return LoadedSession(
+        path=resolved_path,
+        header=header,
+        messages=messages,
+        compaction_summary=compaction_summary,
+    )
+
+
+def _parse_entry_index(entry_id: str) -> int | None:
+    prefix = "entry-"
+    if not entry_id.startswith(prefix):
+        return None
+    try:
+        return int(entry_id[len(prefix) :])
+    except ValueError:
+        return None
 
 
 def find_sessions(session_dir: Path) -> list[LoadedSession]:

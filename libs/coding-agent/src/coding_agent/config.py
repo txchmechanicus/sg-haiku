@@ -56,3 +56,11 @@ class ProviderConfig:
         registry = ModelRegistry.load(self.models_config_paths)
         resolved = registry.resolve(self.model, provider_ref=self.provider)
         return resolved.provider.id, resolved.model.id
+
+    def context_window(self) -> int | None:
+        """Returns the resolved model's context window, or None for the mock provider."""
+        if self.model is None:
+            return None
+        registry = ModelRegistry.load(self.models_config_paths)
+        resolved = registry.resolve(self.model, provider_ref=self.provider)
+        return resolved.model.contextWindow
