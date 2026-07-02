@@ -14,6 +14,7 @@ from upstream.models import (
     UserMessage,
 )
 from upstream.providers import (
+    AnthropicMessagesProvider,
     MockProvider,
     ModelProvider,
     OpenAICodexProvider,
@@ -24,6 +25,7 @@ from upstream.types import AgentToolResult, ToolSpec
 
 __all__ = [
     "AgentToolResult",
+    "AnthropicMessagesProvider",
     "AssistantMessage",
     "AssistantMessageEvent",
     "AssistantResponse",

@@ -5,7 +5,9 @@ from pathlib import Path
 
 import pytest
 from coding_agent.config import ProviderConfig
-from upstream.providers import OpenAICompatibleProvider
+from upstream.auth import AuthStorage
+from upstream.oauth import OAuthTokens
+from upstream.providers import AnthropicMessagesProvider, OpenAICompatibleProvider
 
 
 @pytest.mark.asyncio
@@ -49,3 +51,50 @@ async def test_provider_config_build_disables_images_for_text_only_model(
 
     assert isinstance(provider, OpenAICompatibleProvider)
     assert provider.supports_images is False
+
+
+@pytest.mark.asyncio
+async def test_provider_config_build_resolves_anthropic_oauth(tmp_path: Path) -> None:
+    auth_file = tmp_path / "auth.json"
+    AuthStorage(path=auth_file).set_oauth_credential(
+        "anthropic",
+        OAuthTokens(
+            access_token="oauth-token", refresh_token="refresh-1", expires_at=9_999_999_999
+        ),
+    )
+    config = ProviderConfig(provider="anthropic", model="claude-sonnet-5", auth_file=auth_file)
+
+    provider = await config.build()
+
+    assert isinstance(provider, AnthropicMessagesProvider)
+    assert provider.is_oauth is True
+    assert provider.access_token == "oauth-token"
+
+
+@pytest.mark.asyncio
+async def test_provider_config_build_falls_back_to_api_key_for_anthropic(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-key")
+    config = ProviderConfig(
+        provider="anthropic", model="claude-sonnet-5", auth_file=tmp_path / "auth.json"
+    )
+
+    provider = await config.build()
+
+    assert isinstance(provider, AnthropicMessagesProvider)
+    assert provider.is_oauth is False
+    assert provider.access_token == "sk-ant-key"
+
+
+@pytest.mark.asyncio
+async def test_provider_config_build_raises_without_anthropic_credentials(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    config = ProviderConfig(
+        provider="anthropic", model="claude-sonnet-5", auth_file=tmp_path / "auth.json"
+    )
+
+    with pytest.raises(ValueError, match="Anthropic provider requires"):
+        await config.build()

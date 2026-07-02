@@ -22,7 +22,7 @@ from agent.sessions import (
 from rich.console import Console
 from upstream.auth import DEFAULT_AUTH_FILE, AuthStorage, redact_secret
 from upstream.models import AssistantMessage, SystemMessage, TextContent
-from upstream.providers import oauth_openai_codex
+from upstream.providers import oauth_anthropic, oauth_openai_codex
 from upstream.registry import ModelRegistry
 
 from coding_agent.config import ProviderConfig
@@ -344,15 +344,22 @@ def auth_status(
     console.print(f"{provider}: {credential.type}")
 
 
-_OAUTH_PROVIDERS = {"openai-codex": oauth_openai_codex}
+_OAUTH_PROVIDERS = {"openai-codex": oauth_openai_codex, "anthropic": oauth_anthropic}
 
 
 @auth_app.command("login")
 def auth_login(
-    provider: Annotated[str, typer.Argument(help="Provider id (e.g. openai-codex).")],
+    provider: Annotated[str, typer.Argument(help="Provider id (e.g. openai-codex, anthropic).")],
     device_code: Annotated[
         bool,
         typer.Option("--device-code", help="Use device-code login (for headless sessions)."),
+    ] = False,
+    manual_code: Annotated[
+        bool,
+        typer.Option(
+            "--manual-code",
+            help="Print the login URL and paste back the code (for headless sessions).",
+        ),
     ] = False,
     auth_file: Annotated[
         Path,
@@ -366,6 +373,10 @@ def auth_login(
         raise typer.BadParameter(
             f"OAuth login is not supported for provider: {provider!r}. Supported: {supported}."
         )
+    if device_code and not hasattr(module, "login_with_device_code"):
+        raise typer.BadParameter(f"{provider!r} does not support --device-code login.")
+    if manual_code and not hasattr(module, "start_manual_login"):
+        raise typer.BadParameter(f"{provider!r} does not support --manual-code login.")
 
     async def _login():
         if device_code:
@@ -373,6 +384,11 @@ def auth_login(
                 console.print(f"Go to {verification_uri} and enter code: {user_code}")
 
             return await module.login_with_device_code(on_prompt=_on_prompt)
+        if manual_code:
+            url, verifier = module.start_manual_login()
+            console.print(f"Open this URL to log in:\n{url}\n")
+            pasted = console.input("Paste the redirect URL or code here: ")
+            return await module.login_with_manual_code(pasted, verifier=verifier)
         console.print("Opening your browser to log in...")
         return await module.login_with_browser()
 

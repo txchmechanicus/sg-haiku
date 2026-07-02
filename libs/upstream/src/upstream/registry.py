@@ -113,6 +113,32 @@ class ModelRegistry:
                 maxTokens=128000,
             )
         )
+
+        registry.add_provider(
+            ProviderInfo(
+                id="anthropic",
+                name="Anthropic",
+                api="anthropic-messages",
+                baseUrl="https://api.anthropic.com/v1",
+                apiKeyEnv="ANTHROPIC_API_KEY",
+            )
+        )
+        for model_id, context_window, max_tokens in [
+            ("claude-opus-4-8", 200000, 32000),
+            ("claude-sonnet-5", 200000, 64000),
+        ]:
+            registry.add_model(
+                ModelInfo(
+                    id=model_id,
+                    name=model_id,
+                    api="anthropic-messages",
+                    provider="anthropic",
+                    baseUrl="https://api.anthropic.com/v1",
+                    input=["text", "image"],
+                    contextWindow=context_window,
+                    maxTokens=max_tokens,
+                )
+            )
         return registry
 
     @classmethod

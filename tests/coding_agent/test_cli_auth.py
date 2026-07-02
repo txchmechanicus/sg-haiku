@@ -6,7 +6,7 @@ from pathlib import Path
 from coding_agent.cli import app
 from typer.testing import CliRunner
 from upstream.oauth import OAuthTokens
-from upstream.providers import oauth_openai_codex
+from upstream.providers import oauth_anthropic, oauth_openai_codex
 
 runner = CliRunner()
 
@@ -59,6 +59,58 @@ def test_cli_auth_login_device_code_writes_oauth_credential(tmp_path: Path, monk
     assert "ABCD-1234" in result.stdout
     data = _read_auth_file(auth_file)
     assert data["providers"]["openai-codex"]["accessToken"] == "access-2"
+
+
+def test_cli_auth_login_anthropic_browser_writes_oauth_credential(
+    tmp_path: Path, monkeypatch
+) -> None:
+    auth_file = tmp_path / "auth.json"
+
+    async def fake_login_with_browser(**kwargs) -> OAuthTokens:
+        return OAuthTokens(access_token="access-3", refresh_token="refresh-3", expires_at=789)
+
+    monkeypatch.setattr(oauth_anthropic, "login_with_browser", fake_login_with_browser)
+
+    result = runner.invoke(app, ["auth", "login", "anthropic", "--auth-file", str(auth_file)])
+
+    assert result.exit_code == 0
+    data = _read_auth_file(auth_file)
+    assert data["providers"]["anthropic"]["accessToken"] == "access-3"
+
+
+def test_cli_auth_login_anthropic_manual_code(tmp_path: Path, monkeypatch) -> None:
+    auth_file = tmp_path / "auth.json"
+
+    def fake_start_manual_login():
+        return "https://claude.ai/oauth/authorize?state=verifier-1", "verifier-1"
+
+    async def fake_login_with_manual_code(pasted: str, *, verifier: str) -> OAuthTokens:
+        assert verifier == "verifier-1"
+        assert pasted.strip() == "pasted-code"
+        return OAuthTokens(access_token="access-4", refresh_token="refresh-4", expires_at=111)
+
+    monkeypatch.setattr(oauth_anthropic, "start_manual_login", fake_start_manual_login)
+    monkeypatch.setattr(oauth_anthropic, "login_with_manual_code", fake_login_with_manual_code)
+
+    result = runner.invoke(
+        app,
+        ["auth", "login", "anthropic", "--manual-code", "--auth-file", str(auth_file)],
+        input="pasted-code\n",
+    )
+
+    assert result.exit_code == 0
+    assert "claude.ai/oauth/authorize" in result.stdout
+    data = _read_auth_file(auth_file)
+    assert data["providers"]["anthropic"]["accessToken"] == "access-4"
+
+
+def test_cli_auth_login_device_code_unsupported_for_anthropic(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["auth", "login", "anthropic", "--device-code", "--auth-file", str(tmp_path / "auth.json")],
+    )
+
+    assert result.exit_code != 0
 
 
 def test_cli_auth_login_rejects_unsupported_provider(tmp_path: Path) -> None:
