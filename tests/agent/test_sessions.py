@@ -227,6 +227,36 @@ def test_load_session_exposes_compaction_details(tmp_path: Path) -> None:
     assert loaded.compaction_details == {"readFiles": ["a.py"], "modifiedFiles": []}
 
 
+def test_record_compaction_omits_from_hook_by_default(tmp_path: Path) -> None:
+    path = tmp_path / "session.jsonl"
+    manager = SessionManager.create(explicit_path=path, session_id="session-1", cwd=tmp_path)
+    first = manager.record_message(UserMessage(content="one", timestamp=1))
+
+    record = manager.record_compaction(
+        summary="Summary.",
+        first_kept_entry_id=str(first["id"]),
+        tokens_before=100,
+    )
+
+    assert "fromHook" not in record
+
+
+def test_record_compaction_sets_from_hook_when_true(tmp_path: Path) -> None:
+    path = tmp_path / "session.jsonl"
+    manager = SessionManager.create(explicit_path=path, session_id="session-1", cwd=tmp_path)
+    first = manager.record_message(UserMessage(content="one", timestamp=1))
+
+    record = manager.record_compaction(
+        summary="Summary.",
+        first_kept_entry_id=str(first["id"]),
+        tokens_before=100,
+        from_hook=True,
+    )
+
+    assert record["fromHook"] is True
+    assert read_jsonl(path)[-1]["fromHook"] is True
+
+
 def test_load_session_uses_only_the_last_compaction_entry(tmp_path: Path) -> None:
     path = tmp_path / "session.jsonl"
     manager = SessionManager.create(explicit_path=path, session_id="session-1", cwd=tmp_path)

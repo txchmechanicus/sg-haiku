@@ -116,6 +116,48 @@ async def test_compact_summarizes_and_cuts(monkeypatch) -> None:
     assert result.first_kept_entry_id != entries[0].id
     assert result.summary
     assert result.tokens_before == estimate_context_tokens(entries)
+    assert result.from_hook is False
+
+
+class _RaisingProvider(MockProvider):
+    """Fails if the LLM summarization path is ever invoked."""
+
+    async def stream(self, messages, tools, system_prompt=None):
+        raise AssertionError("LLM summarization should not be called with provided_summary")
+        yield  # pragma: no cover - unreachable, keeps this an async generator
+
+
+@pytest.mark.asyncio
+async def test_compact_uses_provided_summary_and_sets_from_hook() -> None:
+    entries = _refs(
+        [
+            UserMessage(content="a" * 400),
+            AssistantMessage(content=[TextContent(text="b" * 400)]),
+            UserMessage(content="c" * 400),
+            AssistantMessage(content=[TextContent(text="d" * 400)]),
+        ]
+    )
+    provider = _RaisingProvider()
+
+    result = await compact(
+        provider, entries, keep_recent_tokens=10, provided_summary="hook-supplied summary"
+    )
+
+    assert result.summary == "hook-supplied summary"
+    assert result.from_hook is True
+
+
+@pytest.mark.asyncio
+async def test_compact_provided_summary_with_empty_history() -> None:
+    provider = _RaisingProvider()
+
+    result = await compact(
+        provider, [], keep_recent_tokens=10, provided_summary="hook-supplied summary"
+    )
+
+    assert result.summary == "hook-supplied summary"
+    assert result.from_hook is True
+    assert result.first_kept_entry_id == ""
 
 
 @pytest.mark.asyncio
@@ -129,6 +171,7 @@ async def test_compact_reuses_previous_summary_when_nothing_to_cut() -> None:
 
     assert result.first_kept_entry_id == entries[0].id
     assert result.summary == "earlier summary"
+    assert result.from_hook is False
 
 
 @pytest.mark.asyncio
@@ -140,6 +183,7 @@ async def test_compact_handles_empty_history() -> None:
     assert result.first_kept_entry_id == ""
     assert result.summary == "earlier summary"
     assert result.tokens_before == 0
+    assert result.from_hook is False
 
 
 def _read_call_and_result(call_id: str, path: str, *, is_error: bool = False) -> list[Message]:

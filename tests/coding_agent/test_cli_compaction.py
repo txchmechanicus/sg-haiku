@@ -154,6 +154,42 @@ def test_cli_injects_compaction_summary_as_system_message(tmp_path: Path, monkey
     assert final_turn_messages[1].role != "system"
 
 
+def test_cli_compact_command_with_summary_flag_sets_from_hook(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    session_path = tmp_path / "session.jsonl"
+    _seed_session(session_path)
+
+    result = runner.invoke(
+        app,
+        ["compact", str(session_path), "--summary", "custom summary text"],
+    )
+
+    assert result.exit_code == 0
+    records = _read_session(str(session_path))
+    compactions = [r for r in records if r["type"] == "compaction"]
+    assert len(compactions) == 1
+    assert compactions[0]["summary"] == "custom summary text"
+    assert compactions[0]["fromHook"] is True
+
+
+def test_cli_compact_command_without_summary_flag_omits_from_hook(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    session_path = tmp_path / "session.jsonl"
+    _seed_session(session_path)
+
+    result = runner.invoke(app, ["compact", str(session_path)])
+
+    assert result.exit_code == 0
+    records = _read_session(str(session_path))
+    compactions = [r for r in records if r["type"] == "compaction"]
+    assert len(compactions) == 1
+    assert "fromHook" not in compactions[0]
+
+
 def test_cli_no_compaction_flag_disables_compaction(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(ProviderConfig, "context_window", lambda self: 100)

@@ -376,6 +376,16 @@ def compact_session(
             help="Approximate number of recent tokens to keep uncompacted.",
         ),
     ] = 8000,
+    summary: Annotated[
+        str | None,
+        typer.Option(
+            "--summary",
+            help=(
+                "Use this text as the summary instead of asking the model. "
+                "Recorded with fromHook=true, since it bypasses the default LLM summarization."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Manually compact a session, without running a new prompt turn."""
     if model == "mock" or provider == "mock":
@@ -398,6 +408,7 @@ def compact_session(
                 list(loaded.entry_refs),
                 previous_summary=loaded.compaction_summary,
                 keep_recent_tokens=compaction_keep_tokens,
+                provided_summary=summary,
             )
         )
         manager = SessionManager.create(
@@ -414,6 +425,7 @@ def compact_session(
             first_kept_entry_id=result.first_kept_entry_id,
             tokens_before=result.tokens_before,
             details=result.details.to_json() if result.details else None,
+            from_hook=result.from_hook,
         )
         console.print(result.summary)
     except ValueError as exc:
@@ -483,6 +495,7 @@ async def _run(
                 first_kept_entry_id=result.first_kept_entry_id,
                 tokens_before=result.tokens_before,
                 details=result.details.to_json() if result.details else None,
+                from_hook=result.from_hook,
             )
             cut_position = next(
                 (

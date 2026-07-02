@@ -89,6 +89,7 @@ class CompactionResult:
     first_kept_entry_id: str
     tokens_before: int
     details: CompactionDetails | None = None
+    from_hook: bool = False
 
 
 def extract_file_ops(entries: list[EntryRef]) -> CompactionDetails:
@@ -147,17 +148,29 @@ async def compact(
     *,
     previous_summary: str | None = None,
     keep_recent_tokens: int,
+    provided_summary: str | None = None,
 ) -> CompactionResult:
+    """Compact `entries`.
+
+    `provided_summary`, when given, is used verbatim instead of calling the LLM — mirroring
+    Pi's `fromHook` semantics: `fromHook` means *something other than the default LLM
+    summarization* supplied the summary (e.g. a hook/extension), not "who triggered compaction".
+    """
     tokens_before = estimate_context_tokens(entries)
     if not entries:
         return CompactionResult(
-            summary=previous_summary or "", first_kept_entry_id="", tokens_before=tokens_before
+            summary=provided_summary if provided_summary is not None else (previous_summary or ""),
+            first_kept_entry_id="",
+            tokens_before=tokens_before,
+            from_hook=provided_summary is not None,
         )
 
     cut_index = find_cut_index(entries, keep_recent_tokens)
     summarized_entries = entries[:cut_index]
     to_summarize = [entry.message for entry in summarized_entries]
-    if to_summarize:
+    if provided_summary is not None:
+        summary = provided_summary
+    elif to_summarize:
         summary = await summarize(provider, to_summarize, previous_summary=previous_summary)
     else:
         summary = previous_summary or ""
@@ -171,6 +184,7 @@ async def compact(
         first_kept_entry_id=entries[cut_index].id,
         tokens_before=tokens_before,
         details=details,
+        from_hook=provided_summary is not None,
     )
 
 

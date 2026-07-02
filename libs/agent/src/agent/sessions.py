@@ -154,6 +154,7 @@ class SessionManager:
         first_kept_entry_id: str,
         tokens_before: int,
         details: dict[str, object] | None = None,
+        from_hook: bool = False,
     ) -> dict[str, object]:
         fields: dict[str, object] = {
             "type": "compaction",
@@ -163,6 +164,8 @@ class SessionManager:
         }
         if details is not None:
             fields["details"] = details
+        if from_hook:
+            fields["fromHook"] = True
         return self._append_entry(fields)
 
     def record_leaf_change(
