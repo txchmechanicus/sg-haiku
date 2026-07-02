@@ -1,11 +1,21 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from upstream.models import AssistantMessage, Message, TextContent, ToolCall, UserMessage
+from upstream.models import (
+    AssistantMessage,
+    Message,
+    TextContent,
+    ToolCall,
+    ToolResultMessage,
+    UserMessage,
+)
 from upstream.providers.base import ModelProvider
 
 from agent.entries import EntryRef
+
+_READ_TOOL_NAMES = {"read"}
+_WRITE_TOOL_NAMES = {"write", "edit"}
 
 SUMMARY_SYSTEM_PROMPT = (
     "You summarize coding-agent conversation history so it can be dropped from context "
@@ -62,10 +72,57 @@ def find_cut_index(entries: list[EntryRef], keep_recent_tokens: int) -> int:
 
 
 @dataclass(frozen=True)
+class CompactionDetails:
+    """Files touched during a summarized span, mirroring Pi's CompactionEntry.details."""
+
+    readFiles: list[str] = field(default_factory=list)
+    modifiedFiles: list[str] = field(default_factory=list)
+
+    def to_json(self) -> dict[str, object]:
+        return {"readFiles": self.readFiles, "modifiedFiles": self.modifiedFiles}
+
+
+@dataclass(frozen=True)
 class CompactionResult:
     summary: str
     first_kept_entry_id: str
     tokens_before: int
+    details: CompactionDetails | None = None
+
+
+def extract_file_ops(entries: list[EntryRef]) -> CompactionDetails:
+    """Derive read/modified file paths from read/write/edit tool calls and their results."""
+    read_files: list[str] = []
+    modified_files: list[str] = []
+    seen_read: set[str] = set()
+    seen_modified: set[str] = set()
+    pending_calls: dict[str, ToolCall] = {}
+
+    for entry in entries:
+        message = entry.message
+        if isinstance(message, AssistantMessage):
+            for part in message.content:
+                if isinstance(part, ToolCall) and (
+                    part.name in _READ_TOOL_NAMES or part.name in _WRITE_TOOL_NAMES
+                ):
+                    pending_calls[part.id] = part
+        elif isinstance(message, ToolResultMessage):
+            call = pending_calls.pop(message.toolCallId, None)
+            if call is None or message.isError:
+                continue
+            path = call.arguments.get("path")
+            if not isinstance(path, str) or not path:
+                continue
+            if call.name in _READ_TOOL_NAMES:
+                if path not in seen_read:
+                    seen_read.add(path)
+                    read_files.append(path)
+            else:
+                if path not in seen_modified:
+                    seen_modified.add(path)
+                    modified_files.append(path)
+
+    return CompactionDetails(readFiles=read_files, modifiedFiles=modified_files)
 
 
 async def summarize(
@@ -97,15 +154,22 @@ async def compact(
         )
 
     cut_index = find_cut_index(entries, keep_recent_tokens)
-    to_summarize = [entry.message for entry in entries[:cut_index]]
+    summarized_entries = entries[:cut_index]
+    to_summarize = [entry.message for entry in summarized_entries]
     if to_summarize:
         summary = await summarize(provider, to_summarize, previous_summary=previous_summary)
     else:
         summary = previous_summary or ""
+
+    details = extract_file_ops(summarized_entries)
+    if not details.readFiles and not details.modifiedFiles:
+        details = None
+
     return CompactionResult(
         summary=summary,
         first_kept_entry_id=entries[cut_index].id,
         tokens_before=tokens_before,
+        details=details,
     )
 
 

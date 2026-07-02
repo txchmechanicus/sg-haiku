@@ -5,6 +5,7 @@ from agent.compaction import (
     compact,
     estimate_context_tokens,
     estimate_tokens,
+    extract_file_ops,
     find_cut_index,
     should_compact,
 )
@@ -139,3 +140,99 @@ async def test_compact_handles_empty_history() -> None:
     assert result.first_kept_entry_id == ""
     assert result.summary == "earlier summary"
     assert result.tokens_before == 0
+
+
+def _read_call_and_result(call_id: str, path: str, *, is_error: bool = False) -> list[Message]:
+    return [
+        AssistantMessage(
+            content=[ToolCall(id=call_id, name="read", arguments={"path": path})],
+            stopReason="toolUse",
+        ),
+        ToolResultMessage(
+            toolCallId=call_id,
+            toolName="read",
+            content=[TextContent(text="contents")],
+            isError=is_error,
+        ),
+    ]
+
+
+def _write_call_and_result(call_id: str, path: str, *, is_error: bool = False) -> list[Message]:
+    return [
+        AssistantMessage(
+            content=[ToolCall(id=call_id, name="edit", arguments={"path": path})],
+            stopReason="toolUse",
+        ),
+        ToolResultMessage(
+            toolCallId=call_id,
+            toolName="edit",
+            content=[TextContent(text="ok")],
+            isError=is_error,
+        ),
+    ]
+
+
+def test_extract_file_ops_tracks_reads_and_writes() -> None:
+    messages = [
+        UserMessage(content="do stuff"),
+        *_read_call_and_result("call-1", "a.py"),
+        *_write_call_and_result("call-2", "b.py"),
+    ]
+
+    details = extract_file_ops(_refs(messages))
+
+    assert details.readFiles == ["a.py"]
+    assert details.modifiedFiles == ["b.py"]
+
+
+def test_extract_file_ops_ignores_errored_tool_results() -> None:
+    messages = [*_read_call_and_result("call-1", "a.py", is_error=True)]
+
+    details = extract_file_ops(_refs(messages))
+
+    assert details.readFiles == []
+    assert details.modifiedFiles == []
+
+
+def test_extract_file_ops_deduplicates_paths() -> None:
+    messages = [
+        *_read_call_and_result("call-1", "a.py"),
+        *_read_call_and_result("call-2", "a.py"),
+    ]
+
+    details = extract_file_ops(_refs(messages))
+
+    assert details.readFiles == ["a.py"]
+
+
+@pytest.mark.asyncio
+async def test_compact_attaches_details_when_files_are_touched() -> None:
+    messages = [
+        UserMessage(content="a" * 400),
+        *_read_call_and_result("call-1", "a.py"),
+        UserMessage(content="c" * 400),
+        AssistantMessage(content=[TextContent(text="d" * 400)]),
+    ]
+    provider = MockProvider()
+
+    result = await compact(provider, _refs(messages), keep_recent_tokens=10)
+
+    assert result.details is not None
+    assert result.details.readFiles == ["a.py"]
+
+
+@pytest.mark.asyncio
+async def test_compact_omits_details_when_no_files_are_touched() -> None:
+    entries = _refs(
+        [
+            UserMessage(content="a" * 400),
+            AssistantMessage(content=[TextContent(text="b" * 400)]),
+            UserMessage(content="c" * 400),
+            AssistantMessage(content=[TextContent(text="d" * 400)]),
+        ]
+    )
+    provider = MockProvider()
+
+    result = await compact(provider, entries, keep_recent_tokens=10)
+
+    assert result.details is None

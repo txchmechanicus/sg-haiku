@@ -413,6 +413,7 @@ def compact_session(
             summary=result.summary,
             first_kept_entry_id=result.first_kept_entry_id,
             tokens_before=result.tokens_before,
+            details=result.details.to_json() if result.details else None,
         )
         console.print(result.summary)
     except ValueError as exc:
@@ -449,7 +450,7 @@ async def _run(
         exclude_tools=exclude_tools,
     )
     agent = Agent(provider=config.build(), tools=registry)
-    initial_entries, session, compaction_summary = _build_session_manager(
+    initial_entries, session, compaction_summary, compaction_details = _build_session_manager(
         session_path=session_path,
         session_dir=session_dir,
         session_id=session_id,
@@ -481,6 +482,7 @@ async def _run(
                 summary=result.summary,
                 first_kept_entry_id=result.first_kept_entry_id,
                 tokens_before=result.tokens_before,
+                details=result.details.to_json() if result.details else None,
             )
             cut_position = next(
                 (
@@ -492,6 +494,7 @@ async def _run(
             )
             initial_entries = initial_entries[cut_position:]
             compaction_summary = result.summary
+            compaction_details = result.details.to_json() if result.details else None
             if stream_json:
                 print(json.dumps(compaction_record, ensure_ascii=False))
 
@@ -500,6 +503,15 @@ async def _run(
         effective_system_prompt = (
             f"{effective_system_prompt}\n\nCompacted conversation summary:\n{compaction_summary}"
         )
+    if compaction_details:
+        read_files = compaction_details.get("readFiles") or []
+        modified_files = compaction_details.get("modifiedFiles") or []
+        if read_files or modified_files:
+            effective_system_prompt = (
+                f"{effective_system_prompt}\n\nFiles touched before compaction:\n"
+                f"Read: {', '.join(read_files) or 'none'}\n"
+                f"Modified: {', '.join(modified_files) or 'none'}"
+            )
 
     had_error = False
     events: list[AgentEvent] = []
@@ -545,7 +557,7 @@ def _build_session_manager(
     continue_session: bool,
     resume: str | None,
     fork: str | None,
-) -> tuple[list[EntryRef], SessionManager, str | None]:
+) -> tuple[list[EntryRef], SessionManager, str | None, dict[str, object] | None]:
     mode_count = sum(bool(value) for value in (continue_session, resume, fork))
     if mode_count > 1:
         raise ValueError("Use only one of --continue, --resume, or --fork.")
@@ -592,6 +604,7 @@ def _build_session_manager(
         list(loaded.entry_refs) if loaded is not None else [],
         manager,
         loaded.compaction_summary if loaded is not None else None,
+        loaded.compaction_details if loaded is not None else None,
     )
 
 

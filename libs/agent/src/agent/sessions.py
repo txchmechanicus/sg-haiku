@@ -41,6 +41,7 @@ class LoadedSession:
     leaf_id: str | None
     entry_ids: frozenset[str] = field(default_factory=frozenset)
     compaction_summary: str | None = None
+    compaction_details: dict[str, object] | None = None
 
     @property
     def session_id(self) -> str:
@@ -152,15 +153,17 @@ class SessionManager:
         summary: str,
         first_kept_entry_id: str,
         tokens_before: int,
+        details: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        return self._append_entry(
-            {
-                "type": "compaction",
-                "summary": summary,
-                "firstKeptEntryId": first_kept_entry_id,
-                "tokensBefore": tokens_before,
-            }
-        )
+        fields: dict[str, object] = {
+            "type": "compaction",
+            "summary": summary,
+            "firstKeptEntryId": first_kept_entry_id,
+            "tokensBefore": tokens_before,
+        }
+        if details is not None:
+            fields["details"] = details
+        return self._append_entry(fields)
 
     def record_leaf_change(
         self, target_id: str, *, summary: str | None = None
@@ -266,7 +269,9 @@ def load_session(path: Path) -> LoadedSession:
         raise ValueError(f"Session header has no id: {path}")
     validate_session_id(str(header["id"]))
 
-    entry_refs, compaction_summary = build_context(entries_by_id, current_leaf_id)
+    entry_refs, compaction_summary, compaction_details = build_context(
+        entries_by_id, current_leaf_id
+    )
 
     return LoadedSession(
         path=resolved_path,
@@ -275,6 +280,7 @@ def load_session(path: Path) -> LoadedSession:
         leaf_id=current_leaf_id,
         entry_ids=frozenset(entries_by_id),
         compaction_summary=compaction_summary,
+        compaction_details=compaction_details,
     )
 
 
@@ -298,7 +304,7 @@ def get_path_to_root(
 
 def build_context(
     entries_by_id: dict[str, dict[str, object]], leaf_id: str | None
-) -> tuple[list[EntryRef], str | None]:
+) -> tuple[list[EntryRef], str | None, dict[str, object] | None]:
     path = get_path_to_root(entries_by_id, leaf_id)
 
     last_compaction: dict[str, object] | None = None
@@ -309,9 +315,12 @@ def build_context(
     message_entries = [entry for entry in path if entry["type"] == "message"]
 
     compaction_summary: str | None = None
+    compaction_details: dict[str, object] | None = None
     cut_index = 0
     if last_compaction is not None:
         compaction_summary = str(last_compaction.get("summary", ""))
+        details = last_compaction.get("details")
+        compaction_details = details if isinstance(details, dict) else None
         cut_entry_id = str(last_compaction.get("firstKeptEntryId", ""))
         for index, entry in enumerate(message_entries):
             if entry["id"] == cut_entry_id:
@@ -325,7 +334,7 @@ def build_context(
         EntryRef(id=str(entry["id"]), message=_MESSAGE_ADAPTER.validate_python(entry["message"]))
         for entry in kept
     ]
-    return entry_refs, compaction_summary
+    return entry_refs, compaction_summary, compaction_details
 
 
 def find_sessions(session_dir: Path) -> list[LoadedSession]:

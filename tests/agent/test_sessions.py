@@ -211,6 +211,22 @@ def test_load_session_applies_latest_compaction_entry(tmp_path: Path) -> None:
     assert loaded.messages[0].content == "two"
 
 
+def test_load_session_exposes_compaction_details(tmp_path: Path) -> None:
+    path = tmp_path / "session.jsonl"
+    manager = SessionManager.create(explicit_path=path, session_id="session-1", cwd=tmp_path)
+    first = manager.record_message(UserMessage(content="one", timestamp=1))
+    manager.record_compaction(
+        summary="Summary.",
+        first_kept_entry_id=str(first["id"]),
+        tokens_before=100,
+        details={"readFiles": ["a.py"], "modifiedFiles": []},
+    )
+
+    loaded = load_session(path)
+
+    assert loaded.compaction_details == {"readFiles": ["a.py"], "modifiedFiles": []}
+
+
 def test_load_session_uses_only_the_last_compaction_entry(tmp_path: Path) -> None:
     path = tmp_path / "session.jsonl"
     manager = SessionManager.create(explicit_path=path, session_id="session-1", cwd=tmp_path)
