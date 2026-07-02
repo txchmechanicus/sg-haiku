@@ -1,1 +1,1 @@
-{"type": "model_change", "provider": "mock", "modelId": "mock"}
+{"type": "model_change", "provider": "mock", "modelId": "mock", "id": "id-1", "parentId": null, "timestamp": "2026-01-01T00:00:00Z"}

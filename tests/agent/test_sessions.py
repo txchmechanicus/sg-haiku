@@ -65,7 +65,7 @@ def test_load_session_ignores_unknown_entries(tmp_path: Path) -> None:
                 json.dumps(
                     {
                         "type": "session",
-                        "version": 3,
+                        "version": 4,
                         "id": "session-1",
                         "timestamp": "2026-01-01T00:00:00Z",
                         "cwd": str(tmp_path),
@@ -75,6 +75,8 @@ def test_load_session_ignores_unknown_entries(tmp_path: Path) -> None:
                 json.dumps(
                     {
                         "type": "message",
+                        "id": "id-1",
+                        "parentId": None,
                         "message": UserMessage(
                             content="hello",
                             timestamp=123,
@@ -192,10 +194,10 @@ def test_load_session_applies_latest_compaction_entry(tmp_path: Path) -> None:
     manager.record_message(
         AssistantMessage(content=[TextContent(text="reply one")], stopReason="stop", timestamp=2)
     )
-    manager.record_message(UserMessage(content="two", timestamp=3))
+    third = manager.record_message(UserMessage(content="two", timestamp=3))
     manager.record_compaction(
         summary="Summary up to message 2.",
-        first_kept_entry_id="entry-2",
+        first_kept_entry_id=str(third["id"]),
         tokens_before=1000,
     )
     manager.record_message(
@@ -212,17 +214,18 @@ def test_load_session_applies_latest_compaction_entry(tmp_path: Path) -> None:
 def test_load_session_uses_only_the_last_compaction_entry(tmp_path: Path) -> None:
     path = tmp_path / "session.jsonl"
     manager = SessionManager.create(explicit_path=path, session_id="session-1", cwd=tmp_path)
-    for i in range(4):
-        manager.record_message(UserMessage(content=f"msg-{i}", timestamp=i))
+    message_records = [
+        manager.record_message(UserMessage(content=f"msg-{i}", timestamp=i)) for i in range(4)
+    ]
     manager.record_compaction(
         summary="First summary.",
-        first_kept_entry_id="entry-1",
+        first_kept_entry_id=str(message_records[1]["id"]),
         tokens_before=500,
     )
     manager.record_message(UserMessage(content="msg-4", timestamp=4))
     manager.record_compaction(
         summary="Second summary.",
-        first_kept_entry_id="entry-3",
+        first_kept_entry_id=str(message_records[3]["id"]),
         tokens_before=800,
     )
 
@@ -230,3 +233,53 @@ def test_load_session_uses_only_the_last_compaction_entry(tmp_path: Path) -> Non
 
     assert loaded.compaction_summary == "Second summary."
     assert [message.content for message in loaded.messages] == ["msg-3", "msg-4"]
+
+
+def test_record_leaf_change_rewinds_context_and_keeps_abandoned_branch_in_file(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "session.jsonl"
+    manager = SessionManager.create(explicit_path=path, session_id="session-1", cwd=tmp_path)
+    first = manager.record_message(UserMessage(content="one", timestamp=1))
+    manager.record_message(
+        AssistantMessage(content=[TextContent(text="abandoned reply")], timestamp=2)
+    )
+    manager.record_leaf_change(str(first["id"]), summary="Abandoned a wrong turn.")
+    manager.record_message(
+        AssistantMessage(content=[TextContent(text="retried reply")], timestamp=3)
+    )
+
+    loaded = load_session(path)
+    records = read_jsonl(path)
+
+    assert [record["type"] for record in records] == [
+        "session",
+        "message",
+        "message",
+        "branch_summary",
+        "leaf",
+        "message",
+    ]
+    assert [message.content for message in loaded.messages if message.role == "user"] == ["one"]
+    assert [
+        part.text
+        for message in loaded.messages
+        if message.role == "assistant"
+        for part in message.content
+    ] == ["retried reply"]
+
+
+def test_load_session_replays_leaf_id_across_multiple_rewinds(tmp_path: Path) -> None:
+    path = tmp_path / "session.jsonl"
+    manager = SessionManager.create(explicit_path=path, session_id="session-1", cwd=tmp_path)
+    root = manager.record_message(UserMessage(content="root", timestamp=1))
+    manager.record_message(UserMessage(content="branch-a", timestamp=2))
+    manager.record_leaf_change(str(root["id"]))
+    manager.record_message(UserMessage(content="branch-b", timestamp=3))
+    manager.record_leaf_change(str(root["id"]))
+    third = manager.record_message(UserMessage(content="branch-c", timestamp=4))
+
+    loaded = load_session(path)
+
+    assert [message.content for message in loaded.messages] == ["root", "branch-c"]
+    assert loaded.leaf_id == third["id"]

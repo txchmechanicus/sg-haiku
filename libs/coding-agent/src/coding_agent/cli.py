@@ -10,6 +10,7 @@ import typer.core
 from agent import Agent
 from agent.compaction import compact, estimate_context_tokens, should_compact
 from agent.context import PromptContextBuilder
+from agent.entries import EntryRef
 from agent.events import AgentEvent
 from agent.sessions import (
     DEFAULT_SESSION_DIR,
@@ -20,7 +21,7 @@ from agent.sessions import (
 )
 from rich.console import Console
 from upstream.auth import DEFAULT_AUTH_FILE, AuthStorage, redact_secret
-from upstream.models import AssistantMessage, Message, TextContent
+from upstream.models import AssistantMessage, TextContent
 from upstream.registry import ModelRegistry
 
 from coding_agent.config import ProviderConfig
@@ -394,7 +395,7 @@ def compact_session(
         result = asyncio.run(
             compact(
                 model_provider,
-                list(loaded.messages),
+                list(loaded.entry_refs),
                 previous_summary=loaded.compaction_summary,
                 keep_recent_tokens=compaction_keep_tokens,
             )
@@ -405,10 +406,12 @@ def compact_session(
             cwd=Path.cwd(),
             append=True,
             header=loaded.header,
+            leaf_id=loaded.leaf_id,
+            known_ids=loaded.entry_ids,
         )
         manager.record_compaction(
             summary=result.summary,
-            first_kept_entry_id=f"entry-{result.cut_index}",
+            first_kept_entry_id=result.first_kept_entry_id,
             tokens_before=result.tokens_before,
         )
         console.print(result.summary)
@@ -446,7 +449,7 @@ async def _run(
         exclude_tools=exclude_tools,
     )
     agent = Agent(provider=config.build(), tools=registry)
-    initial_messages, session, compaction_summary = _build_session_manager(
+    initial_entries, session, compaction_summary = _build_session_manager(
         session_path=session_path,
         session_dir=session_dir,
         session_id=session_id,
@@ -466,20 +469,28 @@ async def _run(
 
     context_window = config.context_window()
     if compaction_enabled and context_window is not None:
-        context_tokens = estimate_context_tokens(initial_messages)
+        context_tokens = estimate_context_tokens(initial_entries)
         if should_compact(context_tokens, context_window, compaction_reserve_tokens):
             result = await compact(
                 agent.provider,
-                initial_messages,
+                initial_entries,
                 previous_summary=compaction_summary,
                 keep_recent_tokens=compaction_keep_tokens,
             )
             compaction_record = session.record_compaction(
                 summary=result.summary,
-                first_kept_entry_id=f"entry-{result.cut_index}",
+                first_kept_entry_id=result.first_kept_entry_id,
                 tokens_before=result.tokens_before,
             )
-            initial_messages = initial_messages[result.cut_index :]
+            cut_position = next(
+                (
+                    index
+                    for index, entry in enumerate(initial_entries)
+                    if entry.id == result.first_kept_entry_id
+                ),
+                len(initial_entries),
+            )
+            initial_entries = initial_entries[cut_position:]
             compaction_summary = result.summary
             if stream_json:
                 print(json.dumps(compaction_record, ensure_ascii=False))
@@ -494,7 +505,7 @@ async def _run(
     events: list[AgentEvent] = []
     async for event in agent.run(
         prompt,
-        initial_messages=initial_messages,
+        initial_messages=[entry.message for entry in initial_entries],
         system_prompt=effective_system_prompt,
         use_tools=use_tools,
     ):
@@ -534,7 +545,7 @@ def _build_session_manager(
     continue_session: bool,
     resume: str | None,
     fork: str | None,
-) -> tuple[list[Message], SessionManager, str | None]:
+) -> tuple[list[EntryRef], SessionManager, str | None]:
     mode_count = sum(bool(value) for value in (continue_session, resume, fork))
     if mode_count > 1:
         raise ValueError("Use only one of --continue, --resume, or --fork.")
@@ -574,9 +585,11 @@ def _build_session_manager(
         parent_session=parent_session,
         append=append,
         header=header,
+        leaf_id=loaded.leaf_id if append and loaded else None,
+        known_ids=loaded.entry_ids if append and loaded else None,
     )
     return (
-        list(loaded.messages) if loaded is not None else [],
+        list(loaded.entry_refs) if loaded is not None else [],
         manager,
         loaded.compaction_summary if loaded is not None else None,
     )

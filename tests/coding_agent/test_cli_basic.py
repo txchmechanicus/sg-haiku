@@ -155,7 +155,7 @@ def test_cli_json_mode(tmp_path: Path, monkeypatch) -> None:
     assert result.exit_code == 0
     records = [json.loads(line) for line in result.stdout.splitlines()]
     assert records[0]["type"] == "session"
-    assert records[0]["version"] == 3
+    assert records[0]["version"] == 4
     assert records[1]["type"] == "agent_start"
     assert records[-1]["type"] == "agent_end"
 

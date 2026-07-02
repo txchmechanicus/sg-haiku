@@ -50,10 +50,11 @@ def test_cli_compacts_session_when_over_threshold(tmp_path: Path, monkeypatch) -
 
     assert result.exit_code == 0
     records = _read_session(str(session_path))
+    message_ids = {r["id"] for r in records if r["type"] == "message"}
     compactions = [r for r in records if r["type"] == "compaction"]
     assert len(compactions) == 1
     assert compactions[0]["summary"]
-    assert compactions[0]["firstKeptEntryId"].startswith("entry-")
+    assert compactions[0]["firstKeptEntryId"] in message_ids
 
 
 def test_cli_no_compaction_flag_disables_compaction(tmp_path: Path, monkeypatch) -> None:

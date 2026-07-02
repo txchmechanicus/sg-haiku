@@ -4,5 +4,8 @@
     "role": "user",
     "content": "hello",
     "timestamp": 123
-  }
+  },
+  "id": "id-1",
+  "parentId": null,
+  "timestamp": "2026-01-01T00:00:00Z"
 }

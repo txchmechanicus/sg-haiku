@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from upstream.models import AssistantMessage, Message, TextContent, ToolCall, UserMessage
 from upstream.providers.base import ModelProvider
 
+from agent.entries import EntryRef
+
 SUMMARY_SYSTEM_PROMPT = (
     "You summarize coding-agent conversation history so it can be dropped from context "
     "without losing what matters. Write a concise summary covering: the user's goal, "
@@ -20,27 +22,27 @@ def estimate_tokens(message: Message) -> int:
     return len(_render_message_text(message)) // _CHARS_PER_TOKEN
 
 
-def estimate_context_tokens(messages: list[Message]) -> int:
-    return sum(estimate_tokens(message) for message in messages)
+def estimate_context_tokens(entries: list[EntryRef]) -> int:
+    return sum(estimate_tokens(entry.message) for entry in entries)
 
 
 def should_compact(context_tokens: int, context_window: int, reserve_tokens: int) -> bool:
     return context_tokens > (context_window - reserve_tokens)
 
 
-def find_cut_index(messages: list[Message], keep_recent_tokens: int) -> int:
+def find_cut_index(entries: list[EntryRef], keep_recent_tokens: int) -> int:
     """Return the index to cut at, landing on a user-message boundary.
 
     Never splits an assistant tool call from its ToolResultMessage: a turn always
     starts with a UserMessage, so the cut point is advanced forward to the next one.
     """
-    if not messages:
+    if not entries:
         return 0
 
     total = 0
     cut = None
-    for index in range(len(messages) - 1, -1, -1):
-        total += estimate_tokens(messages[index])
+    for index in range(len(entries) - 1, -1, -1):
+        total += estimate_tokens(entries[index].message)
         if total > keep_recent_tokens:
             cut = index
             break
@@ -48,13 +50,13 @@ def find_cut_index(messages: list[Message], keep_recent_tokens: int) -> int:
         return 0
 
     forward = cut
-    while forward < len(messages) and messages[forward].role != "user":
+    while forward < len(entries) and entries[forward].message.role != "user":
         forward += 1
-    if forward < len(messages):
+    if forward < len(entries):
         return forward
 
     backward = cut
-    while backward > 0 and messages[backward].role != "user":
+    while backward > 0 and entries[backward].message.role != "user":
         backward -= 1
     return backward
 
@@ -62,7 +64,7 @@ def find_cut_index(messages: list[Message], keep_recent_tokens: int) -> int:
 @dataclass(frozen=True)
 class CompactionResult:
     summary: str
-    cut_index: int
+    first_kept_entry_id: str
     tokens_before: int
 
 
@@ -83,19 +85,28 @@ async def summarize(
 
 async def compact(
     provider: ModelProvider,
-    messages: list[Message],
+    entries: list[EntryRef],
     *,
     previous_summary: str | None = None,
     keep_recent_tokens: int,
 ) -> CompactionResult:
-    tokens_before = estimate_context_tokens(messages)
-    cut_index = find_cut_index(messages, keep_recent_tokens)
-    to_summarize = messages[:cut_index]
+    tokens_before = estimate_context_tokens(entries)
+    if not entries:
+        return CompactionResult(
+            summary=previous_summary or "", first_kept_entry_id="", tokens_before=tokens_before
+        )
+
+    cut_index = find_cut_index(entries, keep_recent_tokens)
+    to_summarize = [entry.message for entry in entries[:cut_index]]
     if to_summarize:
         summary = await summarize(provider, to_summarize, previous_summary=previous_summary)
     else:
         summary = previous_summary or ""
-    return CompactionResult(summary=summary, cut_index=cut_index, tokens_before=tokens_before)
+    return CompactionResult(
+        summary=summary,
+        first_kept_entry_id=entries[cut_index].id,
+        tokens_before=tokens_before,
+    )
 
 
 def _build_summary_prompt(messages: list[Message], previous_summary: str | None) -> str:

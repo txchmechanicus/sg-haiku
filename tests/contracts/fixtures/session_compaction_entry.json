@@ -1,1 +1,1 @@
-{"type": "compaction", "summary": "Compacted context.", "firstKeptEntryId": "entry-1", "tokensBefore": 1000}
+{"type": "compaction", "summary": "Compacted context.", "firstKeptEntryId": "entry-1", "tokensBefore": 1000, "id": "id-1", "parentId": null, "timestamp": "2026-01-01T00:00:00Z"}

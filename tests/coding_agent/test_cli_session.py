@@ -22,7 +22,7 @@ def test_cli_writes_session_file(tmp_path: Path, monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert records[0]["type"] == "session"
-    assert records[0]["version"] == 3
+    assert records[0]["version"] == 4
     assert messages[0]["message"]["role"] == "user"
     assert messages[1]["message"]["role"] == "assistant"
     assert events[0]["event"]["type"] == "agent_start"

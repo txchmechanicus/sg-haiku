@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from itertools import count
 from pathlib import Path
 
 from agent import AgentEvent
@@ -31,6 +32,19 @@ def load_jsonl(name: str) -> list[dict[str, object]]:
 
 def dump_model(value) -> dict[str, object]:
     return value.model_dump(mode="json", exclude_none=True)
+
+
+def sequential_ids():
+    counter = count(1)
+
+    def _next() -> str:
+        return f"id-{next(counter)}"
+
+    return _next
+
+
+def with_fixed_timestamp(record: dict[str, object]) -> dict[str, object]:
+    return {**record, "timestamp": "2026-01-01T00:00:00Z"}
 
 
 def assistant_text_message() -> AssistantMessage:
@@ -118,6 +132,7 @@ def test_session_header_and_message_entry_golden_fixtures(tmp_path: Path) -> Non
         session_id="session-1",
         cwd=tmp_path,
         write_enabled=False,
+        id_generator=sequential_ids(),
     )
 
     header = manager.header()
@@ -125,10 +140,10 @@ def test_session_header_and_message_entry_golden_fixtures(tmp_path: Path) -> Non
     header["cwd"] = "/workspace"
 
     assert header == load_json("session_header.json")
-    assert manager.record_message(UserMessage(content="hello", timestamp=123)) == load_json(
-        "session_message_entry.json"
-    )
-    assert manager.record_event(AgentEvent.agent_start()) == load_json("session_event_entry.json")
+    message_entry = manager.record_message(UserMessage(content="hello", timestamp=123))
+    assert with_fixed_timestamp(message_entry) == load_json("session_message_entry.json")
+    event_entry = manager.record_event(AgentEvent.agent_start())
+    assert with_fixed_timestamp(event_entry) == load_json("session_event_entry.json")
 
 
 def test_session_model_change_entry_golden_fixture(tmp_path: Path) -> None:
@@ -137,10 +152,10 @@ def test_session_model_change_entry_golden_fixture(tmp_path: Path) -> None:
         session_id="session-1",
         cwd=tmp_path,
         write_enabled=False,
+        id_generator=sequential_ids(),
     )
-    assert manager.record_model_change(provider="mock", model_id="mock") == load_json(
-        "session_model_change_entry.json"
-    )
+    entry = manager.record_model_change(provider="mock", model_id="mock")
+    assert with_fixed_timestamp(entry) == load_json("session_model_change_entry.json")
 
 
 def test_session_thinking_level_change_entry_golden_fixture(tmp_path: Path) -> None:
@@ -149,10 +164,10 @@ def test_session_thinking_level_change_entry_golden_fixture(tmp_path: Path) -> N
         session_id="session-1",
         cwd=tmp_path,
         write_enabled=False,
+        id_generator=sequential_ids(),
     )
-    assert manager.record_thinking_level_change(thinking_level="high") == load_json(
-        "session_thinking_level_change_entry.json"
-    )
+    entry = manager.record_thinking_level_change(thinking_level="high")
+    assert with_fixed_timestamp(entry) == load_json("session_thinking_level_change_entry.json")
 
 
 def test_session_compaction_entry_golden_fixture(tmp_path: Path) -> None:
@@ -161,9 +176,11 @@ def test_session_compaction_entry_golden_fixture(tmp_path: Path) -> None:
         session_id="session-1",
         cwd=tmp_path,
         write_enabled=False,
+        id_generator=sequential_ids(),
     )
-    assert manager.record_compaction(
+    entry = manager.record_compaction(
         summary="Compacted context.",
         first_kept_entry_id="entry-1",
         tokens_before=1000,
-    ) == load_json("session_compaction_entry.json")
+    )
+    assert with_fixed_timestamp(entry) == load_json("session_compaction_entry.json")
