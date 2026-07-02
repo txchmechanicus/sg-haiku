@@ -9,6 +9,7 @@ from agent.sessions import SessionManager
 from upstream import (
     AssistantMessage,
     AssistantMessageEvent,
+    SystemMessage,
     TextContent,
     ToolCall,
     ToolResultMessage,
@@ -76,6 +77,9 @@ def test_message_golden_fixtures() -> None:
             timestamp=123,
         )
     ) == load_json("tool_result_message.json")
+    assert dump_model(SystemMessage(content="hello", timestamp=123)) == load_json(
+        "system_message.json"
+    )
 
 
 def test_assistant_message_event_golden_fixture() -> None:

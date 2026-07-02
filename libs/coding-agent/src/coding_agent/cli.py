@@ -21,7 +21,7 @@ from agent.sessions import (
 )
 from rich.console import Console
 from upstream.auth import DEFAULT_AUTH_FILE, AuthStorage, redact_secret
-from upstream.models import AssistantMessage, TextContent
+from upstream.models import AssistantMessage, SystemMessage, TextContent
 from upstream.registry import ModelRegistry
 
 from coding_agent.config import ProviderConfig
@@ -499,25 +499,16 @@ async def _run(
                 print(json.dumps(compaction_record, ensure_ascii=False))
 
     effective_system_prompt = system_prompt or agent.system_prompt
-    if compaction_summary:
-        effective_system_prompt = (
-            f"{effective_system_prompt}\n\nCompacted conversation summary:\n{compaction_summary}"
-        )
-    if compaction_details:
-        read_files = compaction_details.get("readFiles") or []
-        modified_files = compaction_details.get("modifiedFiles") or []
-        if read_files or modified_files:
-            effective_system_prompt = (
-                f"{effective_system_prompt}\n\nFiles touched before compaction:\n"
-                f"Read: {', '.join(read_files) or 'none'}\n"
-                f"Modified: {', '.join(modified_files) or 'none'}"
-            )
+    initial_messages = [entry.message for entry in initial_entries]
+    summary_message = _build_compaction_summary_message(compaction_summary, compaction_details)
+    if summary_message is not None:
+        initial_messages = [summary_message, *initial_messages]
 
     had_error = False
     events: list[AgentEvent] = []
     async for event in agent.run(
         prompt,
-        initial_messages=[entry.message for entry in initial_entries],
+        initial_messages=initial_messages,
         system_prompt=effective_system_prompt,
         use_tools=use_tools,
     ):
@@ -646,6 +637,24 @@ def _print_models(models_config: list[Path] | None) -> None:
                 ]
             )
         )
+
+
+def _build_compaction_summary_message(
+    summary: str | None, details: dict[str, object] | None
+) -> SystemMessage | None:
+    if not summary:
+        return None
+    parts = [f"Compacted conversation summary:\n{summary}"]
+    if details:
+        read_files = details.get("readFiles") or []
+        modified_files = details.get("modifiedFiles") or []
+        if read_files or modified_files:
+            parts.append(
+                "Files touched before compaction:\n"
+                f"Read: {', '.join(read_files) or 'none'}\n"
+                f"Modified: {', '.join(modified_files) or 'none'}"
+            )
+    return SystemMessage(content="\n\n".join(parts))
 
 
 def _json_result(events: list[AgentEvent]) -> dict[str, object]:

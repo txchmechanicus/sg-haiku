@@ -203,6 +203,8 @@ class OpenAICompatibleProvider(ModelProvider):
     def _format_message(self, message: Message) -> dict[str, Any]:
         if message.role == "tool":
             raise ValueError("legacy tool role is not supported")
+        if message.role == "system":
+            return {"role": "system", "content": message.content}
         if message.role == "toolResult":
             return {
                 "role": "tool",

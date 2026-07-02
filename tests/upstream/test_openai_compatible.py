@@ -8,6 +8,7 @@ from upstream import (
     AssistantMessage,
     ImageContent,
     OpenAICompatibleProvider,
+    SystemMessage,
     TextContent,
     ToolCall,
     ToolResultMessage,
@@ -252,6 +253,16 @@ def test_openai_compatible_formats_tool_result_message() -> None:
         "tool_call_id": "call-1",
         "name": "read",
         "content": "file contents",
+    }
+
+
+def test_openai_compatible_formats_system_message() -> None:
+    provider = OpenAICompatibleProvider(model="gpt-test", api_key="test-key")
+    message = SystemMessage(content="compacted summary", timestamp=123)
+
+    assert provider._format_message(message) == {
+        "role": "system",
+        "content": "compacted summary",
     }
 
 

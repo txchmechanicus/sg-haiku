@@ -60,6 +60,16 @@ class Usage(BaseModel):
     cost: UsageCost = Field(default_factory=UsageCost)
 
 
+class SystemMessage(BaseModel):
+    """Non-provider-authored context injected into conversation history (e.g. a compaction
+    summary), rather than the base system prompt. Rendered as a `system` role message by
+    providers that support it."""
+
+    role: Literal["system"] = "system"
+    content: str
+    timestamp: int = Field(default_factory=timestamp_ms)
+
+
 class UserMessage(BaseModel):
     role: Literal["user"] = "user"
     content: str | list[TextContent | ImageContent]
@@ -91,7 +101,7 @@ class ToolResultMessage(BaseModel):
     timestamp: int = Field(default_factory=timestamp_ms)
 
 
-Message = UserMessage | AssistantMessage | ToolResultMessage
+Message = UserMessage | AssistantMessage | ToolResultMessage | SystemMessage
 
 
 class AssistantMessageEvent(BaseModel):

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from upstream.models import (
     AssistantMessage,
     Message,
+    SystemMessage,
     TextContent,
     ToolCall,
     ToolResultMessage,
@@ -198,5 +199,7 @@ def _render_message_text(message: Message) -> str:
         calls = [part for part in message.content if isinstance(part, ToolCall)]
         call_text = "".join(f"\n[tool call: {call.name}({call.arguments})]" for call in calls)
         return f"Assistant: {text}{call_text}"
+    if isinstance(message, SystemMessage):
+        return f"System: {message.content}"
     text = "".join(part.text for part in message.content if isinstance(part, TextContent))
     return f"Tool result ({message.toolName}): {text}"

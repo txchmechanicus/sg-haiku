@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from agent.sessions import SessionManager
@@ -8,8 +9,27 @@ from coding_agent.cli import app
 from coding_agent.config import ProviderConfig
 from typer.testing import CliRunner
 from upstream import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
+from upstream.models import AssistantMessageEvent, Message
+from upstream.providers.base import ModelProvider
+from upstream.types import ToolSpec
 
 runner = CliRunner()
+
+
+class _CapturingProvider(ModelProvider):
+    def __init__(self) -> None:
+        self.seen_messages: list[list[Message]] = []
+
+    async def stream(
+        self,
+        messages: list[Message],
+        tools: list[ToolSpec],
+        system_prompt: str | None = None,
+    ) -> AsyncIterator[AssistantMessageEvent]:
+        self.seen_messages.append(list(messages))
+        message = AssistantMessage(content=[TextContent(text="ok")], stopReason="stop")
+        yield AssistantMessageEvent(type="start", partial=message)
+        yield AssistantMessageEvent(type="done", reason="stop", message=message)
 
 
 def _read_session(filename: str) -> list[dict]:
@@ -104,6 +124,34 @@ def test_cli_compaction_records_touched_files(tmp_path: Path, monkeypatch) -> No
     assert details is not None
     assert details["readFiles"]
     assert all(path.startswith("file") for path in details["readFiles"])
+
+
+def test_cli_injects_compaction_summary_as_system_message(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ProviderConfig, "context_window", lambda self: 100)
+    provider = _CapturingProvider()
+    monkeypatch.setattr(ProviderConfig, "build", lambda self: provider)
+    session_path = tmp_path / "session.jsonl"
+    _seed_session(session_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "one more question",
+            "--resume",
+            str(session_path),
+            "--compaction-reserve-tokens",
+            "10",
+            "--compaction-keep-tokens",
+            "20",
+        ],
+    )
+
+    assert result.exit_code == 0
+    final_turn_messages = provider.seen_messages[-1]
+    assert final_turn_messages[0].role == "system"
+    assert "Compacted conversation summary" in final_turn_messages[0].content
+    assert final_turn_messages[1].role != "system"
 
 
 def test_cli_no_compaction_flag_disables_compaction(tmp_path: Path, monkeypatch) -> None:
