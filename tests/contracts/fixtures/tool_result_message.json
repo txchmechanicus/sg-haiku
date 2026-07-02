@@ -1,0 +1,13 @@
+{
+  "role": "toolResult",
+  "toolCallId": "call-1",
+  "toolName": "ls",
+  "content": [
+    {
+      "type": "text",
+      "text": "ok"
+    }
+  ],
+  "isError": false,
+  "timestamp": 123
+}

@@ -1,0 +1,8 @@
+{
+  "type": "message",
+  "message": {
+    "role": "user",
+    "content": "hello",
+    "timestamp": 123
+  }
+}

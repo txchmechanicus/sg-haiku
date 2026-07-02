@@ -1,0 +1,6 @@
+{
+  "type": "event",
+  "event": {
+    "type": "agent_start"
+  }
+}

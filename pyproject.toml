@@ -1,0 +1,41 @@
+[project]
+name = "sg-haiku"
+version = "0.1.0"
+description = "AI agent Python toolkit"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "coding-agent",
+]
+
+[tool.uv.workspace]
+members = ["libs/*"]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+agent = { workspace = true }
+coding-agent = { workspace = true }
+upstream = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.5.0",
+]
+
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

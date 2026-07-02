@@ -206,6 +206,12 @@ tempCodeRunnerFile.py
 # Ruff stuff:
 .ruff_cache/
 
+# Haiku local state
+.haiku/
+
+# Local planning notes
+/PLANS.md
+
 # PyPI configuration file
 .pypirc
 
