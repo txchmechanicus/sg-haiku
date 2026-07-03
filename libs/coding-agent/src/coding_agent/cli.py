@@ -19,6 +19,7 @@ from agent.sessions import (
     latest_session,
     resolve_session_reference,
 )
+from agent.skills import discover_skills
 from rich.console import Console
 from upstream.auth import DEFAULT_AUTH_FILE, AuthStorage, redact_secret
 from upstream.models import AssistantMessage, SystemMessage, TextContent
@@ -41,6 +42,8 @@ class _HaikuGroup(typer.core.TyperGroup):
 app = typer.Typer(cls=_HaikuGroup, add_completion=False, no_args_is_help=True)
 auth_app = typer.Typer(add_completion=False, no_args_is_help=True)
 app.add_typer(auth_app, name="auth")
+skills_app = typer.Typer(add_completion=False, no_args_is_help=True)
+app.add_typer(skills_app, name="skills")
 console = Console()
 error_console = Console(stderr=True)
 
@@ -132,6 +135,10 @@ def main(
     no_context_files: Annotated[
         bool,
         typer.Option("--no-context-files", "-nc", help="Do not load AGENTS.md or CLAUDE.md."),
+    ] = False,
+    no_skills: Annotated[
+        bool,
+        typer.Option("--no-skills", help="Do not discover or offer skills to the model."),
     ] = False,
     system_prompt: Annotated[
         str | None,
@@ -237,6 +244,7 @@ def main(
         prompt_context = PromptContextBuilder(cwd=Path.cwd()).build(
             prompt=prompt,
             include_context_files=not no_context_files,
+            include_skills=not no_skills,
             system_prompt=system_prompt,
             append_system_prompts=append_system_prompt,
             prompt_template=prompt_template,
@@ -302,6 +310,19 @@ def auth_unset(
 ) -> None:
     removed = AuthStorage(path=auth_file).remove(provider)
     console.print(f"Removed auth for {provider}." if removed else f"No auth stored for {provider}.")
+
+
+@skills_app.command("list")
+def skills_list() -> None:
+    skills, diagnostics = discover_skills(Path.cwd())
+    if not skills:
+        console.print("No skills found.")
+    for skill in skills:
+        console.print(f"{skill.name}\t{skill.description}\t{skill.file_path}")
+    if diagnostics:
+        console.print("\n[Skill conflicts]")
+        for diagnostic in diagnostics:
+            console.print(f"{diagnostic.type}: {diagnostic.message}")
 
 
 @auth_app.command("list")

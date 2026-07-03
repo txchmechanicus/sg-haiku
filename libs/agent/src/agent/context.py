@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent.core import SYSTEM_PROMPT
-from agent.skills import Skill, discover_skills
+from agent.skills import Skill, SkillDiagnostic, discover_skills
 
 CONTEXT_FILE_NAMES = ("AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD")
 
@@ -15,6 +15,7 @@ class PromptContext:
     system_prompt: str
     context_files: list[Path] = field(default_factory=list)
     skills: list[Skill] = field(default_factory=list)
+    skill_diagnostics: list[SkillDiagnostic] = field(default_factory=list)
 
 
 class PromptContextBuilder:
@@ -39,7 +40,7 @@ class PromptContextBuilder:
         use_prompt_templates: bool = True,
     ) -> PromptContext:
         context_files = self.discover_context_files() if include_context_files else []
-        skills = self.discover_skills() if include_skills else []
+        skills, skill_diagnostics = self.discover_skills() if include_skills else ([], [])
         effective_system_prompt = self._effective_system_prompt(
             context_files=context_files,
             skills=skills,
@@ -56,9 +57,10 @@ class PromptContextBuilder:
             system_prompt=effective_system_prompt,
             context_files=context_files,
             skills=skills,
+            skill_diagnostics=skill_diagnostics,
         )
 
-    def discover_skills(self) -> list[Skill]:
+    def discover_skills(self) -> tuple[list[Skill], list[SkillDiagnostic]]:
         return discover_skills(self.cwd)
 
     def discover_context_files(self) -> list[Path]:
