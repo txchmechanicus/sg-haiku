@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent.core import SYSTEM_PROMPT
+from agent.skills import Skill, discover_skills
 
 CONTEXT_FILE_NAMES = ("AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD")
 
@@ -13,6 +14,7 @@ class PromptContext:
     prompt: str
     system_prompt: str
     context_files: list[Path] = field(default_factory=list)
+    skills: list[Skill] = field(default_factory=list)
 
 
 class PromptContextBuilder:
@@ -30,14 +32,17 @@ class PromptContextBuilder:
         *,
         prompt: str,
         include_context_files: bool = True,
+        include_skills: bool = True,
         system_prompt: str | None = None,
         append_system_prompts: list[str] | None = None,
         prompt_template: Path | None = None,
         use_prompt_templates: bool = True,
     ) -> PromptContext:
         context_files = self.discover_context_files() if include_context_files else []
+        skills = self.discover_skills() if include_skills else []
         effective_system_prompt = self._effective_system_prompt(
             context_files=context_files,
+            skills=skills,
             system_prompt=system_prompt,
             append_system_prompts=append_system_prompts or [],
         )
@@ -50,7 +55,11 @@ class PromptContextBuilder:
             prompt=effective_prompt,
             system_prompt=effective_system_prompt,
             context_files=context_files,
+            skills=skills,
         )
+
+    def discover_skills(self) -> list[Skill]:
+        return discover_skills(self.cwd)
 
     def discover_context_files(self) -> list[Path]:
         files: list[Path] = []
@@ -70,6 +79,7 @@ class PromptContextBuilder:
         self,
         *,
         context_files: list[Path],
+        skills: list[Skill],
         system_prompt: str | None,
         append_system_prompts: list[str],
     ) -> str:
@@ -80,6 +90,9 @@ class PromptContextBuilder:
         ]
         for path in context_files:
             parts.append(f"Context from {path.name}:\n{path.read_text(encoding='utf-8')}")
+        skills_block = _format_skills_block(skills)
+        if skills_block:
+            parts.append(skills_block)
         for value in append_system_prompts:
             parts.append(self._read_value(value))
         return "\n\n".join(part for part in parts if part)
@@ -109,3 +122,15 @@ class PromptContextBuilder:
         if path.is_file():
             return path.read_text(encoding="utf-8")
         return value
+
+
+def _format_skills_block(skills: list[Skill]) -> str:
+    visible = [skill for skill in skills if not skill.disable_model_invocation]
+    if not visible:
+        return ""
+    entries = "\n".join(
+        f"  <skill><name>{skill.name}</name><description>{skill.description}</description>"
+        f"<location>{skill.file_path}</location></skill>"
+        for skill in visible
+    )
+    return f"<available_skills>\n{entries}\n</available_skills>"

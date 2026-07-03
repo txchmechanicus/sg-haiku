@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from agent import skills as skills_module
 from agent.context import PromptContextBuilder
 
 
@@ -96,3 +97,70 @@ def test_context_builder_rejects_missing_prompt_template(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="Prompt template does not exist"):
         builder.build(prompt="hello", prompt_template=tmp_path / "missing.txt")
+
+
+def _write_skill(path: Path, *, name: str, description: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\nBody.\n", encoding="utf-8"
+    )
+
+
+def test_context_builder_includes_available_skills_block(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(skills_module, "GLOBAL_SKILLS_DIR", tmp_path / "missing-global")
+    skill_file = tmp_path / ".haiku" / "skills" / "my-skill" / "SKILL.md"
+    _write_skill(skill_file, name="my-skill", description="Use this when testing.")
+    builder = PromptContextBuilder(cwd=tmp_path, base_system_prompt="base")
+
+    context = builder.build(prompt="hello")
+
+    assert len(context.skills) == 1
+    assert "<available_skills>" in context.system_prompt
+    assert "<name>my-skill</name>" in context.system_prompt
+    assert "<description>Use this when testing.</description>" in context.system_prompt
+    assert str(skill_file) in context.system_prompt
+
+
+def test_context_builder_can_disable_skills(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(skills_module, "GLOBAL_SKILLS_DIR", tmp_path / "missing-global")
+    _write_skill(
+        tmp_path / ".haiku" / "skills" / "my-skill" / "SKILL.md",
+        name="my-skill",
+        description="Use this when testing.",
+    )
+    builder = PromptContextBuilder(cwd=tmp_path, base_system_prompt="base")
+
+    context = builder.build(prompt="hello", include_skills=False)
+
+    assert context.skills == []
+    assert "<available_skills>" not in context.system_prompt
+
+
+def test_context_builder_omits_skills_block_when_none_discovered(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(skills_module, "GLOBAL_SKILLS_DIR", tmp_path / "missing-global")
+    builder = PromptContextBuilder(cwd=tmp_path, base_system_prompt="base")
+
+    context = builder.build(prompt="hello")
+
+    assert context.system_prompt == "base"
+
+
+def test_context_builder_excludes_disabled_skills_from_model_visible_block(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(skills_module, "GLOBAL_SKILLS_DIR", tmp_path / "missing-global")
+    skill_file = tmp_path / ".haiku" / "skills" / "hidden-skill" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text(
+        "---\nname: hidden-skill\ndescription: Hidden.\n"
+        "disable-model-invocation: true\n---\nBody.\n",
+        encoding="utf-8",
+    )
+    builder = PromptContextBuilder(cwd=tmp_path, base_system_prompt="base")
+
+    context = builder.build(prompt="hello")
+
+    assert len(context.skills) == 1
+    assert "<available_skills>" not in context.system_prompt
