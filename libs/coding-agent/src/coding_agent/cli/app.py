@@ -19,15 +19,13 @@ from agent.sessions import (
     latest_session,
     resolve_session_reference,
 )
-from agent.skills import discover_skills
-from rich.console import Console
-from upstream.auth import DEFAULT_AUTH_FILE, AuthStorage, redact_secret
 from upstream.models import AssistantMessage, SystemMessage, TextContent
-from upstream.providers import oauth_anthropic, oauth_openai_codex
 from upstream.registry import ModelRegistry
 
+from coding_agent.cli import interactive
+from coding_agent.cli.console import console, error_console
+from coding_agent.cli.helpers import build_tool_registry, parse_tool_list
 from coding_agent.config import ProviderConfig
-from coding_agent.tools import ToolRegistry, default_registry
 
 
 class _HaikuGroup(typer.core.TyperGroup):
@@ -39,13 +37,7 @@ class _HaikuGroup(typer.core.TyperGroup):
         return super().parse_args(ctx, args)
 
 
-app = typer.Typer(cls=_HaikuGroup, add_completion=False, no_args_is_help=True)
-auth_app = typer.Typer(add_completion=False, no_args_is_help=True)
-app.add_typer(auth_app, name="auth")
-skills_app = typer.Typer(add_completion=False, no_args_is_help=True)
-app.add_typer(skills_app, name="skills")
-console = Console()
-error_console = Console(stderr=True)
+app = typer.Typer(cls=_HaikuGroup, add_completion=False)
 
 _THINKING_LEVELS = {"off", "minimal", "low", "medium", "high", "xhigh"}
 
@@ -225,7 +217,37 @@ def main(
                 error_console.print(f"[red]error:[/red] {exc}")
                 raise typer.Exit(2) from exc
             return
-        raise typer.BadParameter("Provide a prompt as a positional argument.")
+        try:
+            prompt_context = PromptContextBuilder(cwd=Path.cwd()).build(
+                prompt="",
+                include_context_files=not no_context_files,
+                include_skills=not no_skills,
+                system_prompt=system_prompt,
+                append_system_prompts=append_system_prompt,
+                use_prompt_templates=False,
+            )
+            config = ProviderConfig(
+                provider=provider,
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                models_config_paths=models_config,
+                auth_file=auth_file,
+            )
+            asyncio.run(
+                interactive.run(
+                    config,
+                    system_prompt=prompt_context.system_prompt,
+                    use_tools=not no_tools,
+                    no_builtin_tools=no_builtin_tools,
+                    tools=parse_tool_list(tools),
+                    exclude_tools=parse_tool_list(exclude_tools),
+                )
+            )
+        except ValueError as exc:
+            error_console.print(f"[red]error:[/red] {exc}")
+            raise typer.Exit(2) from exc
+        return
     if mode not in {"text", "json", "rpc"}:
         raise typer.BadParameter("--mode must be one of: text, json, rpc.")
     if model == "mock" or provider == "mock":
@@ -275,244 +297,13 @@ def main(
                 resume=resume,
                 fork=fork,
                 no_builtin_tools=no_builtin_tools,
-                tools=_parse_tool_list(tools),
-                exclude_tools=_parse_tool_list(exclude_tools),
+                tools=parse_tool_list(tools),
+                exclude_tools=parse_tool_list(exclude_tools),
                 compaction_enabled=not no_compaction,
                 compaction_reserve_tokens=compaction_reserve_tokens,
                 compaction_keep_tokens=compaction_keep_tokens,
             )
         )
-    except ValueError as exc:
-        error_console.print(f"[red]error:[/red] {exc}")
-        raise typer.Exit(2) from exc
-
-
-@auth_app.command("set")
-def auth_set(
-    provider: Annotated[str, typer.Argument(help="Provider id.")],
-    api_key: Annotated[str, typer.Option("--api-key", help="API key to store.")],
-    auth_file: Annotated[
-        Path,
-        typer.Option("--auth-file", help="Path to auth JSON file."),
-    ] = DEFAULT_AUTH_FILE,
-) -> None:
-    AuthStorage(path=auth_file).set_api_key(provider, api_key)
-    console.print(f"Stored API key for {provider}.")
-
-
-@auth_app.command("unset")
-def auth_unset(
-    provider: Annotated[str, typer.Argument(help="Provider id.")],
-    auth_file: Annotated[
-        Path,
-        typer.Option("--auth-file", help="Path to auth JSON file."),
-    ] = DEFAULT_AUTH_FILE,
-) -> None:
-    removed = AuthStorage(path=auth_file).remove(provider)
-    console.print(f"Removed auth for {provider}." if removed else f"No auth stored for {provider}.")
-
-
-@skills_app.command("list")
-def skills_list() -> None:
-    skills, diagnostics = discover_skills(Path.cwd())
-    if not skills:
-        console.print("No skills found.")
-    for skill in skills:
-        console.print(f"{skill.name}\t{skill.description}\t{skill.file_path}")
-    if diagnostics:
-        console.print("\n[Skill conflicts]")
-        for diagnostic in diagnostics:
-            console.print(f"{diagnostic.type}: {diagnostic.message}")
-
-
-@auth_app.command("list")
-def auth_list(
-    auth_file: Annotated[
-        Path,
-        typer.Option("--auth-file", help="Path to auth JSON file."),
-    ] = DEFAULT_AUTH_FILE,
-) -> None:
-    storage = AuthStorage(path=auth_file)
-    providers = storage.list()
-    if not providers:
-        console.print("No auth entries.")
-        return
-    for provider in providers:
-        status = storage.get_auth_status(provider)
-        console.print(f"{provider}\t{status['type']}\t{status['source']}")
-
-
-@auth_app.command("status")
-def auth_status(
-    provider: Annotated[str, typer.Argument(help="Provider id.")],
-    auth_file: Annotated[
-        Path,
-        typer.Option("--auth-file", help="Path to auth JSON file."),
-    ] = DEFAULT_AUTH_FILE,
-) -> None:
-    storage = AuthStorage(path=auth_file)
-    credential = storage.get(provider)
-    if credential is None:
-        console.print(f"{provider}: not authenticated")
-        return
-    if getattr(credential, "type", None) == "api_key":
-        console.print(f"{provider}: api_key {redact_secret(getattr(credential, 'key', None))}")
-        return
-    if getattr(credential, "type", None) == "oauth":
-        expires_at = getattr(credential, "expiresAt", None)
-        console.print(f"{provider}: oauth (expires at {expires_at})")
-        return
-    console.print(f"{provider}: {credential.type}")
-
-
-_OAUTH_PROVIDERS = {"openai-codex": oauth_openai_codex, "anthropic": oauth_anthropic}
-
-
-@auth_app.command("login")
-def auth_login(
-    provider: Annotated[str, typer.Argument(help="Provider id (e.g. openai-codex, anthropic).")],
-    device_code: Annotated[
-        bool,
-        typer.Option("--device-code", help="Use device-code login (for headless sessions)."),
-    ] = False,
-    manual_code: Annotated[
-        bool,
-        typer.Option(
-            "--manual-code",
-            help="Print the login URL and paste back the code (for headless sessions).",
-        ),
-    ] = False,
-    auth_file: Annotated[
-        Path,
-        typer.Option("--auth-file", help="Path to auth JSON file."),
-    ] = DEFAULT_AUTH_FILE,
-) -> None:
-    """Log in to a provider via OAuth."""
-    module = _OAUTH_PROVIDERS.get(provider)
-    if module is None:
-        supported = ", ".join(sorted(_OAUTH_PROVIDERS))
-        raise typer.BadParameter(
-            f"OAuth login is not supported for provider: {provider!r}. Supported: {supported}."
-        )
-    if device_code and not hasattr(module, "login_with_device_code"):
-        raise typer.BadParameter(f"{provider!r} does not support --device-code login.")
-    if manual_code and not hasattr(module, "start_manual_login"):
-        raise typer.BadParameter(f"{provider!r} does not support --manual-code login.")
-
-    async def _login():
-        if device_code:
-            def _on_prompt(verification_uri: str, user_code: str) -> None:
-                console.print(f"Go to {verification_uri} and enter code: {user_code}")
-
-            return await module.login_with_device_code(on_prompt=_on_prompt)
-        if manual_code:
-            url, verifier = module.start_manual_login()
-            console.print(f"Open this URL to log in:\n{url}\n")
-            pasted = console.input("Paste the redirect URL or code here: ")
-            return await module.login_with_manual_code(pasted, verifier=verifier)
-        console.print("Opening your browser to log in...")
-        return await module.login_with_browser()
-
-    try:
-        tokens = asyncio.run(_login())
-    except Exception as exc:
-        error_console.print(f"[red]error:[/red] {exc}")
-        raise typer.Exit(2) from exc
-
-    AuthStorage(path=auth_file).set_oauth_credential(provider, tokens)
-    console.print(f"Logged in to {provider}.")
-
-
-@app.command("compact")
-def compact_session(
-    session_ref: Annotated[str, typer.Argument(help="Session file path or id.")],
-    session_dir: Annotated[
-        Path,
-        typer.Option("--session-dir", help="Directory to search for sessions."),
-    ] = DEFAULT_SESSION_DIR,
-    provider: Annotated[
-        str | None,
-        typer.Option("--provider", help="Model provider."),
-    ] = None,
-    model: Annotated[
-        str | None, typer.Option("--model", help="Model name.")
-    ] = None,
-    base_url: Annotated[
-        str | None,
-        typer.Option("--base-url", help="OpenAI-compatible API base URL."),
-    ] = None,
-    api_key: Annotated[
-        str | None,
-        typer.Option("--api-key", help="API key. Falls back to OPENAI_API_KEY."),
-    ] = None,
-    auth_file: Annotated[
-        Path | None,
-        typer.Option("--auth-file", help="Path to auth JSON file."),
-    ] = None,
-    models_config: Annotated[
-        list[Path] | None,
-        typer.Option("--models-config", help="Read models from this JSON file."),
-    ] = None,
-    compaction_keep_tokens: Annotated[
-        int,
-        typer.Option(
-            "--compaction-keep-tokens",
-            help="Approximate number of recent tokens to keep uncompacted.",
-        ),
-    ] = 8000,
-    summary: Annotated[
-        str | None,
-        typer.Option(
-            "--summary",
-            help=(
-                "Use this text as the summary instead of asking the model. "
-                "Recorded with fromHook=true, since it bypasses the default LLM summarization."
-            ),
-        ),
-    ] = None,
-) -> None:
-    """Manually compact a session, without running a new prompt turn."""
-    if model == "mock" or provider == "mock":
-        raise typer.BadParameter("mock is a dev-only provider and cannot be selected via CLI.")
-
-    try:
-        loaded = resolve_session_reference(session_ref, session_dir)
-        config = ProviderConfig(
-            provider=provider,
-            model=model,
-            base_url=base_url,
-            api_key=api_key,
-            models_config_paths=models_config,
-            auth_file=auth_file,
-        )
-        async def _build_and_compact():
-            model_provider = await config.build()
-            return await compact(
-                model_provider,
-                list(loaded.entry_refs),
-                previous_summary=loaded.compaction_summary,
-                keep_recent_tokens=compaction_keep_tokens,
-                provided_summary=summary,
-            )
-
-        result = asyncio.run(_build_and_compact())
-        manager = SessionManager.create(
-            explicit_path=loaded.path,
-            session_id=loaded.session_id,
-            cwd=Path.cwd(),
-            append=True,
-            header=loaded.header,
-            leaf_id=loaded.leaf_id,
-            known_ids=loaded.entry_ids,
-        )
-        manager.record_compaction(
-            summary=result.summary,
-            first_kept_entry_id=result.first_kept_entry_id,
-            tokens_before=result.tokens_before,
-            details=result.details.to_json() if result.details else None,
-            from_hook=result.from_hook,
-        )
-        console.print(result.summary)
     except ValueError as exc:
         error_console.print(f"[red]error:[/red] {exc}")
         raise typer.Exit(2) from exc
@@ -541,7 +332,7 @@ async def _run(
     compaction_reserve_tokens: int = 4096,
     compaction_keep_tokens: int = 8000,
 ) -> None:
-    registry = _build_tool_registry(
+    registry = build_tool_registry(
         no_builtin_tools=no_builtin_tools,
         tools=tools,
         exclude_tools=exclude_tools,
@@ -697,28 +488,6 @@ def _build_session_manager(
     )
 
 
-def _build_tool_registry(
-    *,
-    no_builtin_tools: bool,
-    tools: set[str] | None,
-    exclude_tools: set[str] | None,
-) -> ToolRegistry:
-    registry = ToolRegistry() if no_builtin_tools else default_registry(Path.cwd())
-    if no_builtin_tools and (tools or exclude_tools):
-        raise ValueError(
-            "--tools and --exclude-tools cannot be used with --no-builtin-tools "
-            "(no tools are registered to filter)."
-        )
-    return registry.filtered(include=tools, exclude=exclude_tools)
-
-
-def _parse_tool_list(value: str | None) -> set[str] | None:
-    if value is None:
-        return None
-    names = {part.strip() for part in value.split(",") if part.strip()}
-    return names
-
-
 def _print_models(models_config: list[Path] | None) -> None:
     registry = ModelRegistry.load(models_config)
     print("provider\tid\tname\tapi\tcontextWindow\tmaxTokens")
@@ -788,7 +557,3 @@ def _json_result(events: list[AgentEvent]) -> dict[str, object]:
 
 def _assistant_text(message: AssistantMessage) -> str:
     return "".join(part.text for part in message.content if isinstance(part, TextContent))
-
-
-if __name__ == "__main__":
-    app()
