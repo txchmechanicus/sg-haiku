@@ -359,7 +359,6 @@ async def _run(
         resume=resume,
         fork=fork,
     )
-
     runner = await build_extension_runner(
         cwd=cwd,
         registry=registry,
