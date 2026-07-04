@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 
 from agent import Agent
 from agent.events import AgentEvent
 from tui import TUI, Container, ProcessTerminal, Terminal, Text
 from upstream.models import Message
+from upstream.providers import ModelProvider
+from upstream.registry import ModelInfo
 
+from coding_agent.modes.interactive import commands
 from coding_agent.modes.interactive.components import (
     AssistantMessageComponent,
     Footer,
@@ -17,8 +21,9 @@ from coding_agent.modes.interactive.components import (
 class InteractiveSession:
     """Owns the agent, conversation state, and the TUI component tree for a
     single interactive-mode run. Mirrors the event-wiring slice of Pi's
-    `interactive-mode.ts`: slash commands, session persistence, and
-    model/theme/session selection are not part of this pass.
+    `interactive-mode.ts`: session persistence and theme/session selection
+    are not part of this pass, but slash commands (/help, /quit, /clear,
+    /model) are.
     """
 
     def __init__(
@@ -28,14 +33,20 @@ class InteractiveSession:
         use_tools: bool = True,
         system_prompt: str | None = None,
         terminal: Terminal | None = None,
+        models: list[ModelInfo] | None = None,
+        on_model_change: Callable[[str, str], Awaitable[ModelProvider]] | None = None,
+        model_label: str | None = None,
     ) -> None:
         self.agent = agent
         self.use_tools = use_tools
         self.system_prompt = system_prompt
         self.messages: list[Message] = []
+        self.models = models
+        self.on_model_change = on_model_change
+        self.model_label = model_label or "mock"
 
         self.transcript = Container()
-        self.footer = Footer(on_submit=self._on_submit)
+        self.footer = Footer(on_submit=self._on_submit, status=self._status_line())
         self.tui = TUI(terminal if terminal is not None else ProcessTerminal())
         self.tui.add(self.transcript)
         self.tui.add(self.footer)
@@ -46,6 +57,10 @@ class InteractiveSession:
         self._tool_components: dict[str, ToolExecutionComponent] = {}
         self._turn_task: asyncio.Task[None] | None = None
         self._eof = False
+        self.quit_requested = False
+
+    def _status_line(self) -> str:
+        return f"model: {self.model_label} · Ctrl-C cancel · Ctrl-D exit · /help for commands"
 
     def _on_submit(self, text: str) -> None:
         text = text.strip()
@@ -72,7 +87,12 @@ class InteractiveSession:
                 if self._eof:
                     return
 
-                self.transcript.add(Text(f"> {text}"))
+                if await commands.dispatch(self, text):
+                    if self.quit_requested:
+                        return
+                    continue
+
+                self.transcript.add(Text(f"> {text}", style="bold cyan"))
                 assistant_component = AssistantMessageComponent()
                 self.transcript.add(assistant_component)
                 self.tui.request_render(force=True)
@@ -118,12 +138,39 @@ class InteractiveSession:
         elif event.type == "agent_end" and event.messages is not None:
             self.messages = event.messages
 
+    def start_model_switch(self, provider_id: str, model_id: str) -> None:
+        asyncio.ensure_future(self._apply_model_change(provider_id, model_id))
+
+    async def _apply_model_change(self, provider_id: str, model_id: str) -> None:
+        assert self.on_model_change is not None
+        label = f"{provider_id}/{model_id}"
+        try:
+            new_provider = await self.on_model_change(provider_id, model_id)
+        except Exception as exc:  # noqa: BLE001 - surface any provider-build failure to the user
+            self.transcript.add(Text(f"Failed to switch to {label}: {exc}", style="red"))
+        else:
+            self.agent.provider = new_provider
+            self.model_label = label
+            self.footer.set_status(self._status_line())
+            self.transcript.add(Text(f"Switched to {label}.", style="green"))
+        self.tui.request_render(force=True)
+
 
 async def run_interactive(
     agent: Agent,
     *,
     use_tools: bool = True,
     system_prompt: str | None = None,
+    models: list[ModelInfo] | None = None,
+    on_model_change: Callable[[str, str], Awaitable[ModelProvider]] | None = None,
+    model_label: str | None = None,
 ) -> None:
-    session = InteractiveSession(agent, use_tools=use_tools, system_prompt=system_prompt)
+    session = InteractiveSession(
+        agent,
+        use_tools=use_tools,
+        system_prompt=system_prompt,
+        models=models,
+        on_model_change=on_model_change,
+        model_label=model_label,
+    )
     await session.run()
