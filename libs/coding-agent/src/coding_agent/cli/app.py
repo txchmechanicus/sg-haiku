@@ -22,7 +22,6 @@ from agent.sessions import (
 from upstream.models import AssistantMessage, SystemMessage, TextContent
 from upstream.registry import ModelRegistry
 
-from coding_agent.cli import interactive
 from coding_agent.cli.console import console, error_console
 from coding_agent.cli.helpers import build_tool_registry, parse_tool_list
 from coding_agent.config import ProviderConfig
@@ -37,7 +36,7 @@ class _HaikuGroup(typer.core.TyperGroup):
         return super().parse_args(ctx, args)
 
 
-app = typer.Typer(cls=_HaikuGroup, add_completion=False)
+app = typer.Typer(cls=_HaikuGroup, add_completion=False, no_args_is_help=True)
 
 _THINKING_LEVELS = {"off", "minimal", "low", "medium", "high", "xhigh"}
 
@@ -217,37 +216,7 @@ def main(
                 error_console.print(f"[red]error:[/red] {exc}")
                 raise typer.Exit(2) from exc
             return
-        try:
-            prompt_context = PromptContextBuilder(cwd=Path.cwd()).build(
-                prompt="",
-                include_context_files=not no_context_files,
-                include_skills=not no_skills,
-                system_prompt=system_prompt,
-                append_system_prompts=append_system_prompt,
-                use_prompt_templates=False,
-            )
-            config = ProviderConfig(
-                provider=provider,
-                model=model,
-                base_url=base_url,
-                api_key=api_key,
-                models_config_paths=models_config,
-                auth_file=auth_file,
-            )
-            asyncio.run(
-                interactive.run(
-                    config,
-                    system_prompt=prompt_context.system_prompt,
-                    use_tools=not no_tools,
-                    no_builtin_tools=no_builtin_tools,
-                    tools=parse_tool_list(tools),
-                    exclude_tools=parse_tool_list(exclude_tools),
-                )
-            )
-        except ValueError as exc:
-            error_console.print(f"[red]error:[/red] {exc}")
-            raise typer.Exit(2) from exc
-        return
+        raise typer.BadParameter("Provide a prompt as a positional argument.")
     if mode not in {"text", "json", "rpc"}:
         raise typer.BadParameter("--mode must be one of: text, json, rpc.")
     if model == "mock" or provider == "mock":
