@@ -19,6 +19,7 @@ package = false
 agent = { workspace = true }
 coding-agent = { workspace = true }
 upstream = { workspace = true }
+tui = { workspace = true }
 
 [dependency-groups]
 dev = [

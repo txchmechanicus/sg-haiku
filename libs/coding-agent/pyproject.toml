@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "agent",
     "upstream",
+    "tui",
     "rich>=13.7.0",
     "typer>=0.12.0",
     "Pillow>=10,<12",
@@ -17,6 +18,7 @@ haiku = "coding_agent.cli:app"
 [tool.uv.sources]
 agent = { workspace = true }
 upstream = { workspace = true }
+tui = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
