@@ -24,4 +24,6 @@ class ToolExecutionComponent(Component):
         if self.finished:
             status = "error" if self.is_error else "ok"
             line += f" -> {status}"
+        if width > 0 and len(line) > width:
+            line = line[: max(width - 1, 0)] + "…"
         return [line]

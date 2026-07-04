@@ -53,6 +53,8 @@ class ProcessTerminal(Terminal):
         return size.columns, size.lines
 
     def enter_raw_mode(self) -> None:
+        if not os.isatty(self._input_fd):
+            raise ValueError("stdin is not a terminal; interactive mode requires a real tty.")
         self._old_settings = termios.tcgetattr(self._input_fd)
         tty.setraw(self._input_fd)
         self._loop = asyncio.get_event_loop()

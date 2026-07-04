@@ -50,6 +50,11 @@ class LineEditor(Focusable):
             self.cursor = 0
         elif key.name in ("end", "ctrl+e"):
             self.cursor = len(self.text)
+        elif key.name == "ctrl+u":
+            self.text = self.text[self.cursor :]
+            self.cursor = 0
+        elif key.name == "ctrl+k":
+            self.text = self.text[: self.cursor]
         elif key.name == "char" and key.char is not None:
             self.text = self.text[: self.cursor] + key.char + self.text[self.cursor :]
             self.cursor += 1

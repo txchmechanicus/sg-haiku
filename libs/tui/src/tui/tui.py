@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 from collections.abc import Callable
 
 from tui.component import CURSOR_MARKER, Component
@@ -54,6 +55,10 @@ class TUI(Container):
         self.terminal.enter_raw_mode()
         self._running = True
         self._read_task = asyncio.ensure_future(self._read_loop())
+        if hasattr(signal, "SIGWINCH"):
+            asyncio.get_running_loop().add_signal_handler(
+                signal.SIGWINCH, lambda: self.request_render(force=True)
+            )
         self._do_render()
 
     def stop(self) -> None:
@@ -61,6 +66,8 @@ class TUI(Container):
         if self._read_task is not None:
             self._read_task.cancel()
             self._read_task = None
+        if hasattr(signal, "SIGWINCH"):
+            asyncio.get_running_loop().remove_signal_handler(signal.SIGWINCH)
         self.terminal.exit_raw_mode()
 
     async def _read_loop(self) -> None:

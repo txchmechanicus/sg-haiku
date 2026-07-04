@@ -45,6 +45,24 @@ def test_editor_enter_submits_and_clears() -> None:
     assert editor.cursor == 0
 
 
+def test_editor_ctrl_u_clears_from_start_to_cursor() -> None:
+    editor = LineEditor(prompt="> ")
+    editor.set_text("hello world")
+    editor.cursor = 5
+    editor.handle_input("\x15")
+    assert editor.text == " world"
+    assert editor.cursor == 0
+
+
+def test_editor_ctrl_k_clears_from_cursor_to_end() -> None:
+    editor = LineEditor(prompt="> ")
+    editor.set_text("hello world")
+    editor.cursor = 5
+    editor.handle_input("\x0b")
+    assert editor.text == "hello"
+    assert editor.cursor == 5
+
+
 def test_editor_render_shows_cursor_marker_only_when_focused() -> None:
     editor = LineEditor(prompt="> ")
     editor.set_text("hi")
