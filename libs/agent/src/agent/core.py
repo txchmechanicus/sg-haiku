@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
 
 from upstream.models import (
     AssistantMessage,
+    ImageContent,
     Message,
     TextContent,
     ToolCall,
@@ -19,6 +21,52 @@ from upstream.types import AgentToolResult, ToolSpec
 from agent.events import AgentEvent
 
 SYSTEM_PROMPT = "You are Haiku, a concise coding agent. Use tools when they help answer the user."
+
+
+@dataclass
+class ProviderRequestPayload:
+    """The `before_provider_request` hook payload: a handler receives this and returns a
+    (possibly different) instance, which is used verbatim for the actual provider call."""
+
+    messages: list[Message]
+    specs: list[ToolSpec]
+    system_prompt: str
+
+
+@dataclass(frozen=True)
+class ToolCallHookResult:
+    """To patch arguments, mutate `call.arguments` in place before returning rather than
+    returning a replacement here."""
+
+    block: bool = False
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ToolResultHookResult:
+    """Field-patch semantics: omitted (`None`) fields keep whatever the tool execution
+    produced."""
+
+    content: list[TextContent | ImageContent] | None = None
+    details: object = None
+    is_error: bool | None = None
+
+
+@dataclass(frozen=True)
+class BeforeAgentStartResult:
+    """Combined result of the `before_agent_start` hook: extra messages to splice in before
+    the user prompt, and/or a system prompt override for this run."""
+
+    messages: list[Message] | None = None
+    system_prompt: str | None = None
+
+
+BeforeToolCallHook = Callable[[ToolCall], Awaitable[ToolCallHookResult | None]]
+AfterToolCallHook = Callable[
+    [ToolCall, AgentToolResult, bool], Awaitable[ToolResultHookResult | None]
+]
+BeforeProviderRequestHook = Callable[[ProviderRequestPayload], Awaitable[ProviderRequestPayload]]
+BeforeAgentStartHook = Callable[[str, str], Awaitable[BeforeAgentStartResult | None]]
 
 
 class ToolExecutor(Protocol):
@@ -45,6 +93,10 @@ class Agent:
         max_tool_iterations: int = 8,
         system_prompt: str = SYSTEM_PROMPT,
         tool_execution_mode: Literal["sequential", "parallel"] = "parallel",
+        before_tool_call: BeforeToolCallHook | None = None,
+        after_tool_call: AfterToolCallHook | None = None,
+        before_provider_request: BeforeProviderRequestHook | None = None,
+        before_agent_start: BeforeAgentStartHook | None = None,
     ) -> None:
         self.provider = provider
         self.cwd = (cwd or Path.cwd()).resolve()
@@ -52,9 +104,42 @@ class Agent:
         self.max_tool_iterations = max_tool_iterations
         self.system_prompt = system_prompt
         self.tool_execution_mode = tool_execution_mode
+        # Hook seams: assignable callbacks (`before_tool_call`/`after_tool_call`,
+        # `before_provider_request`, `before_agent_start`). `Agent` itself stays
+        # hook-mechanism-agnostic: a single callable each, which `coding_agent`'s extension
+        # runner binds to fan out across loaded extensions.
+        self.before_tool_call = before_tool_call
+        self.after_tool_call = after_tool_call
+        self.before_provider_request = before_provider_request
+        self.before_agent_start = before_agent_start
 
     async def _execute_tool(self, call: ToolCall) -> tuple[ToolCall, AgentToolResult, bool]:
+        if self.before_tool_call is not None:
+            # The runner's `tool_call` dispatch has no try/except of its own (an extension
+            # bug should be visible), but the call site that invokes it converts a thrown
+            # exception into a blocked/failed tool call rather than crashing the whole
+            # agent run.
+            try:
+                veto = await self.before_tool_call(call)
+            except Exception as exc:  # noqa: BLE001 - converted into a tool-visible error.
+                reason = f"Extension failed, blocking execution: {exc}"
+                return call, AgentToolResult.text(reason), True
+            if veto is not None and veto.block:
+                reason = veto.reason or f"Tool call to {call.name!r} blocked by extension."
+                return call, AgentToolResult.text(reason), True
+
         result, is_error = await self.tools.run(call)
+
+        if self.after_tool_call is not None:
+            patch = await self.after_tool_call(call, result, is_error)
+            if patch is not None:
+                result = AgentToolResult(
+                    content=patch.content if patch.content is not None else result.content,
+                    details=patch.details if patch.details is not None else result.details,
+                    terminate=result.terminate,
+                )
+                is_error = patch.is_error if patch.is_error is not None else is_error
+
         return call, result, is_error
 
     async def run(
@@ -66,6 +151,16 @@ class Agent:
         use_tools: bool = True,
     ) -> AsyncGenerator[AgentEvent, None]:
         messages: list[Message] = list(initial_messages or [])
+        effective_system_prompt = system_prompt or self.system_prompt
+
+        if self.before_agent_start is not None:
+            preface = await self.before_agent_start(prompt, effective_system_prompt)
+            if preface is not None:
+                if preface.messages:
+                    messages.extend(preface.messages)
+                if preface.system_prompt is not None:
+                    effective_system_prompt = preface.system_prompt
+
         user_message = UserMessage(content=prompt)
         messages.append(user_message)
         specs = self.tools.specs() if use_tools else []
@@ -77,10 +172,17 @@ class Agent:
         for _ in range(self.max_tool_iterations + 1):
             yield AgentEvent.turn_start()
             assistant_message: AssistantMessage | None = None
+            request_payload = ProviderRequestPayload(
+                messages=messages,
+                specs=specs,
+                system_prompt=effective_system_prompt,
+            )
+            if self.before_provider_request is not None:
+                request_payload = await self.before_provider_request(request_payload)
             async for assistant_event in self.provider.stream(
-                messages,
-                specs,
-                system_prompt=system_prompt or self.system_prompt,
+                request_payload.messages,
+                request_payload.specs,
+                system_prompt=request_payload.system_prompt,
             ):
                 current_message = (
                     assistant_event.partial or assistant_event.message or assistant_event.error
