@@ -26,6 +26,14 @@ class Tool:
     """Optional shim run on the raw tool-call arguments before `handler` — e.g. coercing
     loosely-typed values a model produced into the shape `handler` expects. A raised
     exception is reported as a failed tool result, like a `handler` exception."""
+    prompt_snippet: str | None = None
+    """Optional one-line description surfaced in the system prompt's tools block. Omitted
+    entirely (not just left blank) for tools that don't set this — built-in tools already
+    describe themselves via their `ToolSpec`, so this is opt-in and mainly useful for
+    extension-registered tools that want to call out something in prose."""
+    prompt_guidelines: tuple[str, ...] = ()
+    """Optional guideline bullets surfaced in the system prompt's guidelines block when this
+    tool is registered."""
 
     def spec(self) -> ToolSpec:
         return ToolSpec(
@@ -51,6 +59,18 @@ class ToolRegistry:
     def execution_mode_for(self, name: str) -> Literal["sequential", "parallel"] | None:
         tool = self._tools.get(name)
         return tool.execution_mode if tool is not None else None
+
+    def prompt_snippets(self) -> list[str]:
+        return [
+            tool.prompt_snippet for tool in self._tools.values() if tool.prompt_snippet is not None
+        ]
+
+    def prompt_guidelines(self) -> list[str]:
+        return [
+            guideline
+            for tool in self._tools.values()
+            for guideline in tool.prompt_guidelines
+        ]
 
     def filtered(
         self,

@@ -164,3 +164,27 @@ def test_context_builder_excludes_disabled_skills_from_model_visible_block(
 
     assert len(context.skills) == 1
     assert "<available_skills>" not in context.system_prompt
+
+
+def test_context_builder_includes_tool_prompt_snippets_and_guidelines(tmp_path: Path) -> None:
+    builder = PromptContextBuilder(cwd=tmp_path, base_system_prompt="base")
+
+    context = builder.build(
+        prompt="hello",
+        tool_prompt_snippets=["custom_tool: does a custom thing"],
+        tool_prompt_guidelines=["Always call custom_tool before finishing."],
+    )
+
+    assert "Available tools:\n  - custom_tool: does a custom thing" in context.system_prompt
+    assert "Guidelines:\n  - Always call custom_tool before finishing." in context.system_prompt
+
+
+def test_context_builder_omits_tool_blocks_when_none_given(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(skills_module, "GLOBAL_SKILLS_DIR", tmp_path / "missing-global")
+    builder = PromptContextBuilder(cwd=tmp_path, base_system_prompt="base")
+
+    context = builder.build(prompt="hello")
+
+    assert context.system_prompt == "base"
+    assert "Available tools:" not in context.system_prompt
+    assert "Guidelines:" not in context.system_prompt

@@ -506,3 +506,51 @@ def activate(api: ExtensionAPI) -> None:
 
         assert result.exit_code == 0
         assert marker_file.read_text() == "found"
+
+    def test_registered_tool_prompt_snippet_and_guidelines_reach_system_prompt(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        marker_file = tmp_path / "marker.txt"
+        _write_extension(
+            tmp_path / ".haiku" / "extensions",
+            "custom_tool.py",
+            f'''
+from coding_agent.extensions import ExtensionAPI
+from coding_agent.tools.core import Tool
+
+
+async def _handler(args, ctx):
+    from upstream.types import AgentToolResult
+    return AgentToolResult.text("ok"), False
+
+
+async def _check_system_prompt(prompt, system_prompt, ctx):
+    text = ctx.get_system_prompt()
+    ok = (
+        "Available tools:\\n  - deploy: deploys the app" in text
+        and "Guidelines:\\n  - Always confirm before deploying." in text
+    )
+    with open({str(marker_file)!r}, "w") as f:
+        f.write("found" if ok else "missing")
+
+
+def activate(api: ExtensionAPI) -> None:
+    api.register_tool(
+        Tool(
+            name="deploy",
+            description="Deploys the app.",
+            parameters={{}},
+            handler=_handler,
+            prompt_snippet="deploy: deploys the app",
+            prompt_guidelines=("Always confirm before deploying.",),
+        )
+    )
+    api.on("before_agent_start", _check_system_prompt)
+''',
+        )
+
+        result = CliRunner().invoke(app, ["hi", "--no-session"])
+
+        assert result.exit_code == 0
+        assert marker_file.read_text() == "found"

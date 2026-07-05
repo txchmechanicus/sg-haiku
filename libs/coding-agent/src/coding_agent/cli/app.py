@@ -352,6 +352,8 @@ async def _run(
         prompt_template=prompt_template,
         use_prompt_templates=not no_prompt_templates,
         extra_skill_paths=resources.skill_paths,
+        tool_prompt_snippets=registry.prompt_snippets(),
+        tool_prompt_guidelines=registry.prompt_guidelines(),
     )
     prompt = prompt_context.prompt
     effective_system_prompt = prompt_context.system_prompt

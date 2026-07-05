@@ -95,6 +95,32 @@ async def test_run_reports_prepare_arguments_failure_as_tool_error(tmp_path: Pat
     assert "bad shape" in result.content[0].text
 
 
+def test_registry_prompt_snippets_and_guidelines(tmp_path: Path) -> None:
+    from coding_agent.tools.core import Tool, ToolRegistry
+
+    async def handler(_args, _ctx):  # noqa: ANN001
+        raise NotImplementedError
+
+    registry = ToolRegistry()
+    registry.register(Tool(name="plain", description="", parameters={}, handler=handler))
+    registry.register(
+        Tool(
+            name="custom",
+            description="",
+            parameters={},
+            handler=handler,
+            prompt_snippet="custom: does a thing",
+            prompt_guidelines=("Call custom before finishing.", "Never call custom twice."),
+        )
+    )
+
+    assert registry.prompt_snippets() == ["custom: does a thing"]
+    assert registry.prompt_guidelines() == [
+        "Call custom before finishing.",
+        "Never call custom twice.",
+    ]
+
+
 def test_registry_names_and_filtering(tmp_path: Path) -> None:
     registry = default_registry(tmp_path)
 

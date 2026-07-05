@@ -39,6 +39,8 @@ class PromptContextBuilder:
         prompt_template: Path | None = None,
         use_prompt_templates: bool = True,
         extra_skill_paths: tuple[Path, ...] | list[Path] = (),
+        tool_prompt_snippets: tuple[str, ...] | list[str] = (),
+        tool_prompt_guidelines: tuple[str, ...] | list[str] = (),
     ) -> PromptContext:
         context_files = self.discover_context_files() if include_context_files else []
         skills, skill_diagnostics = (
@@ -49,6 +51,8 @@ class PromptContextBuilder:
             skills=skills,
             system_prompt=system_prompt,
             append_system_prompts=append_system_prompts or [],
+            tool_prompt_snippets=tool_prompt_snippets,
+            tool_prompt_guidelines=tool_prompt_guidelines,
         )
         effective_prompt = self.apply_prompt_template(
             prompt=prompt,
@@ -89,6 +93,8 @@ class PromptContextBuilder:
         skills: list[Skill],
         system_prompt: str | None,
         append_system_prompts: list[str],
+        tool_prompt_snippets: tuple[str, ...] | list[str] = (),
+        tool_prompt_guidelines: tuple[str, ...] | list[str] = (),
     ) -> str:
         parts = [
             self._read_value(system_prompt)
@@ -100,6 +106,12 @@ class PromptContextBuilder:
         skills_block = _format_skills_block(skills)
         if skills_block:
             parts.append(skills_block)
+        tools_block = _format_tool_snippets_block(tool_prompt_snippets)
+        if tools_block:
+            parts.append(tools_block)
+        guidelines_block = _format_tool_guidelines_block(tool_prompt_guidelines)
+        if guidelines_block:
+            parts.append(guidelines_block)
         for value in append_system_prompts:
             parts.append(self._read_value(value))
         return "\n\n".join(part for part in parts if part)
@@ -141,3 +153,17 @@ def _format_skills_block(skills: list[Skill]) -> str:
         for skill in visible
     )
     return f"<available_skills>\n{entries}\n</available_skills>"
+
+
+def _format_tool_snippets_block(snippets: tuple[str, ...] | list[str]) -> str:
+    if not snippets:
+        return ""
+    entries = "\n".join(f"  - {snippet}" for snippet in snippets)
+    return f"Available tools:\n{entries}"
+
+
+def _format_tool_guidelines_block(guidelines: tuple[str, ...] | list[str]) -> str:
+    if not guidelines:
+        return ""
+    entries = "\n".join(f"  - {guideline}" for guideline in guidelines)
+    return f"Guidelines:\n{entries}"
