@@ -9,6 +9,7 @@ from upstream.models import ToolCall
 from upstream.types import AgentToolResult, ToolSpec
 
 ToolHandler = Callable[[dict[str, Any], ToolCallContext], Awaitable[tuple[AgentToolResult, bool]]]
+PrepareArguments = Callable[[dict[str, Any]], dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,10 @@ class Tool:
     execution_mode: Literal["sequential", "parallel"] | None = None
     """Per-tool override of `Agent.tool_execution_mode`. `None` means the agent's global
     default applies."""
+    prepare_arguments: PrepareArguments | None = None
+    """Optional shim run on the raw tool-call arguments before `handler` — e.g. coercing
+    loosely-typed values a model produced into the shape `handler` expects. A raised
+    exception is reported as a failed tool result, like a `handler` exception."""
 
     def spec(self) -> ToolSpec:
         return ToolSpec(
@@ -72,8 +77,14 @@ class ToolRegistry:
         tool = self._tools.get(call.name)
         if tool is None:
             return AgentToolResult.text(f"Unknown tool: {call.name}"), True
+        arguments = call.arguments
+        if tool.prepare_arguments is not None:
+            try:
+                arguments = tool.prepare_arguments(arguments)
+            except Exception as exc:  # noqa: BLE001 - tool failures are model-visible results.
+                return AgentToolResult.text(f"Tool {call.name} argument preparation failed: {exc}"), True
         try:
-            return await tool.handler(call.arguments, ctx or _NOOP_CONTEXT)
+            return await tool.handler(arguments, ctx or _NOOP_CONTEXT)
         except Exception as exc:  # noqa: BLE001 - tool failures are model-visible results.
             return AgentToolResult.text(f"Tool {call.name} failed: {exc}"), True
 

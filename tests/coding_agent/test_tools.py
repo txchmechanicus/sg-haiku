@@ -10,6 +10,7 @@ from coding_agent.tools import (
     default_registry,
 )
 from upstream import ToolCall
+from upstream.types import AgentToolResult
 
 
 def test_registry_execution_mode_for(tmp_path: Path) -> None:
@@ -33,6 +34,65 @@ def test_registry_execution_mode_for(tmp_path: Path) -> None:
     assert registry.execution_mode_for("plain") is None
     assert registry.execution_mode_for("seq") == "sequential"
     assert registry.execution_mode_for("missing") is None
+
+
+@pytest.mark.asyncio
+async def test_run_applies_prepare_arguments_before_handler(tmp_path: Path) -> None:
+    from coding_agent.tools.core import Tool, ToolRegistry
+
+    seen_args = {}
+
+    async def handler(args, _ctx):  # noqa: ANN001
+        seen_args.update(args)
+        return AgentToolResult.text("ok"), False
+
+    def prepare(args: dict) -> dict:
+        return {**args, "path": args["path"].strip()}
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="coerce",
+            description="",
+            parameters={},
+            handler=handler,
+            prepare_arguments=prepare,
+        )
+    )
+
+    result, is_error = await registry.run(
+        ToolCall(id="1", name="coerce", arguments={"path": "  a.txt  "})
+    )
+
+    assert is_error is False
+    assert seen_args == {"path": "a.txt"}
+
+
+@pytest.mark.asyncio
+async def test_run_reports_prepare_arguments_failure_as_tool_error(tmp_path: Path) -> None:
+    from coding_agent.tools.core import Tool, ToolRegistry
+
+    async def handler(_args, _ctx):  # noqa: ANN001
+        raise AssertionError("handler should not run")
+
+    def prepare(_args: dict) -> dict:
+        raise ValueError("bad shape")
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            name="coerce",
+            description="",
+            parameters={},
+            handler=handler,
+            prepare_arguments=prepare,
+        )
+    )
+
+    result, is_error = await registry.run(ToolCall(id="1", name="coerce", arguments={}))
+
+    assert is_error is True
+    assert "bad shape" in result.content[0].text
 
 
 def test_registry_names_and_filtering(tmp_path: Path) -> None:
