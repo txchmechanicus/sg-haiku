@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from agent.core import ToolCallContext
 from upstream.models import ImageContent, TextContent
 from upstream.types import AgentToolResult
 
@@ -60,7 +61,7 @@ def create_read_only_tools(cwd: Path) -> ToolRegistry:
 def _ls_tool(cwd: Path) -> Tool:
     root = cwd.resolve()
 
-    async def handler(arguments: dict[str, Any]) -> AgentToolResult:
+    async def handler(arguments: dict[str, Any], _ctx: ToolCallContext) -> AgentToolResult:
         path = _resolve_inside_root(root, str(arguments.get("path") or "."))
         limit = _positive_int(arguments.get("limit"), DEFAULT_LS_LIMIT, "limit")
         if not path.exists():
@@ -118,7 +119,7 @@ def _ls_tool(cwd: Path) -> Tool:
 def _read_tool(cwd: Path) -> Tool:
     root = cwd.resolve()
 
-    async def handler(arguments: dict[str, Any]) -> AgentToolResult:
+    async def handler(arguments: dict[str, Any], _ctx: ToolCallContext) -> AgentToolResult:
         path = _resolve_inside_root(root, str(arguments.get("path") or ""))
         offset = _positive_int(arguments.get("offset"), 1, "offset")
         limit = arguments.get("limit")
@@ -197,7 +198,7 @@ def _read_tool(cwd: Path) -> Tool:
 def _bash_tool(cwd: Path) -> Tool:
     root = cwd.resolve()
 
-    async def handler(arguments: dict[str, Any]) -> AgentToolResult:
+    async def handler(arguments: dict[str, Any], _ctx: ToolCallContext) -> AgentToolResult:
         command = str(arguments.get("command") or "")
         timeout = _positive_int(arguments.get("timeout"), DEFAULT_BASH_TIMEOUT_SECONDS, "timeout")
         if not command.strip():
@@ -250,7 +251,7 @@ def _bash_tool(cwd: Path) -> Tool:
 def _write_tool(cwd: Path) -> Tool:
     root = cwd.resolve()
 
-    async def handler(arguments: dict[str, Any]) -> AgentToolResult:
+    async def handler(arguments: dict[str, Any], _ctx: ToolCallContext) -> AgentToolResult:
         path_arg = str(arguments.get("path") or "")
         path = _resolve_inside_root(root, path_arg)
         content = str(arguments.get("content") or "")
@@ -278,7 +279,7 @@ def _write_tool(cwd: Path) -> Tool:
 def _edit_tool(cwd: Path) -> Tool:
     root = cwd.resolve()
 
-    async def handler(arguments: dict[str, Any]) -> AgentToolResult:
+    async def handler(arguments: dict[str, Any], _ctx: ToolCallContext) -> AgentToolResult:
         path_arg = str(arguments.get("path") or "")
         path = _resolve_inside_root(root, path_arg)
         edits = _normalize_edits(arguments)
@@ -365,7 +366,7 @@ def _edit_tool(cwd: Path) -> Tool:
 def _grep_tool(cwd: Path) -> Tool:
     root = cwd.resolve()
 
-    async def handler(arguments: dict[str, Any]) -> AgentToolResult:
+    async def handler(arguments: dict[str, Any], _ctx: ToolCallContext) -> AgentToolResult:
         pattern = str(arguments.get("pattern") or "")
         if not pattern:
             raise ValueError("pattern must be a non-empty string.")
@@ -455,7 +456,7 @@ def _grep_tool(cwd: Path) -> Tool:
 def _find_tool(cwd: Path) -> Tool:
     root = cwd.resolve()
 
-    async def handler(arguments: dict[str, Any]) -> AgentToolResult:
+    async def handler(arguments: dict[str, Any], _ctx: ToolCallContext) -> AgentToolResult:
         pattern = str(arguments.get("pattern") or "")
         if not pattern:
             raise ValueError("pattern must be a non-empty string.")

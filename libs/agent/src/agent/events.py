@@ -68,6 +68,18 @@ class AgentEvent(BaseModel):
         )
 
     @classmethod
+    def tool_execution_update(
+        cls, tool_call_id: str, tool_name: str, args: Any, partial_result: Any
+    ) -> AgentEvent:
+        return cls(
+            type="tool_execution_update",
+            toolCallId=tool_call_id,
+            toolName=tool_name,
+            args=args,
+            partialResult=partial_result,
+        )
+
+    @classmethod
     def tool_execution_end(
         cls,
         tool_call_id: str,

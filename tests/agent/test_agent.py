@@ -285,3 +285,73 @@ async def test_before_agent_start_hook_injects_messages_and_system_prompt() -> N
         "injected",
         "hello",
     ]
+
+
+class UpdatingToolExecutor:
+    """A minimal ToolExecutor whose tool reports incremental progress via ctx.on_update and
+    reads ctx.ext_context, for exercising the ToolCallContext plumbing end-to-end."""
+
+    def specs(self) -> list[ToolSpec]:
+        return [ToolSpec(name="progress", description="reports progress", parameters={})]
+
+    async def run(self, call: ToolCall, ctx) -> tuple[AgentToolResult, bool]:  # noqa: ANN001
+        ctx.on_update({"step": 1})
+        ctx.on_update({"step": 2})
+        return AgentToolResult.text(f"ext_context={ctx.ext_context!r}"), False
+
+
+class ProgressToolProvider(ModelProvider):
+    async def stream(
+        self,
+        messages: list[Message],
+        tools: list[ToolSpec],
+        system_prompt: str | None = None,
+    ) -> AsyncIterator[AssistantMessageEvent]:
+        last = messages[-1]
+        if last.role == "toolResult":
+            message = AssistantMessage(content=[], stopReason="stop")
+            yield AssistantMessageEvent(type="start", partial=message)
+            yield AssistantMessageEvent(type="done", reason="stop", message=message)
+            return
+        call = ToolCall(id="call-1", name="progress", arguments={})
+        message = AssistantMessage(content=[call], stopReason="toolUse")
+        yield AssistantMessageEvent(type="start", partial=message)
+        yield AssistantMessageEvent(
+            type="toolcall_end", contentIndex=0, toolCall=call, partial=message
+        )
+        yield AssistantMessageEvent(type="done", reason="toolUse", message=message)
+
+
+@pytest.mark.asyncio
+async def test_agent_emits_tool_execution_update_events_before_end(tmp_path: Path) -> None:
+    agent = Agent(provider=ProgressToolProvider(), tools=UpdatingToolExecutor(), cwd=tmp_path)
+
+    events = await collect(agent, "go")
+
+    tool_event_types = [
+        (event.type, event.partialResult)
+        for event in events
+        if event.type in {"tool_execution_update", "tool_execution_end"}
+    ]
+    assert tool_event_types[0] == ("tool_execution_update", {"step": 1})
+    assert tool_event_types[1] == ("tool_execution_update", {"step": 2})
+    assert tool_event_types[2][0] == "tool_execution_end"
+
+
+@pytest.mark.asyncio
+async def test_agent_passes_ext_context_to_tools(tmp_path: Path) -> None:
+    agent = Agent(
+        provider=ProgressToolProvider(),
+        tools=UpdatingToolExecutor(),
+        cwd=tmp_path,
+        provide_tool_context=lambda: "my-ext-context",
+    )
+
+    events = await collect(agent, "go")
+
+    tool_results = [
+        event.message
+        for event in events
+        if event.type == "message_end" and getattr(event.message, "role", None) == "toolResult"
+    ]
+    assert tool_results[0].content[0].text == "ext_context='my-ext-context'"

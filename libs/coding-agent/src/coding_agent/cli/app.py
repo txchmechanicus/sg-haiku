@@ -372,6 +372,7 @@ async def _run(
             after_tool_call=after_tool_call,
             before_provider_request=before_provider_request,
             before_agent_start=before_agent_start,
+            provide_tool_context=runner.create_context,
         )
         await _run_agent(
             agent,

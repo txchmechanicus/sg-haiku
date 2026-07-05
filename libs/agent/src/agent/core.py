@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from upstream.models import (
     AssistantMessage,
@@ -67,19 +67,41 @@ AfterToolCallHook = Callable[
 ]
 BeforeProviderRequestHook = Callable[[ProviderRequestPayload], Awaitable[ProviderRequestPayload]]
 BeforeAgentStartHook = Callable[[str, str], Awaitable[BeforeAgentStartResult | None]]
+ToolContextProvider = Callable[[], object | None]
+
+
+@dataclass(frozen=True)
+class ToolCallContext:
+    """Passed as the second argument to every `ToolExecutor.run()` call.
+
+    `on_update` lets a tool report incremental progress. It is buffered here rather than
+    truly concurrent: whatever the handler passes to it is collected, and once the handler
+    returns, each buffered value is replayed as a `tool_execution_update` `AgentEvent`, in
+    order, right before `tool_execution_end` for that call (see `Agent.run()`). That's a
+    deliberate simplification for sg-haiku's headless, line-at-a-time CLI output — there is
+    no live-rendering consumer that would benefit from truly interleaved delivery.
+
+    `ext_context` is whatever extra runtime object the caller wants a tool to see. `Agent`
+    itself has no opinion on its type (set via `Agent(provide_tool_context=...)`) —
+    `coding_agent` supplies its `ExtensionContext` here so custom tools registered by
+    extensions (and built-in tools) can read `cwd`/`session_manager`/etc.
+    """
+
+    on_update: Callable[[Any], None]
+    ext_context: object | None = None
 
 
 class ToolExecutor(Protocol):
     def specs(self) -> list[ToolSpec]: ...
 
-    async def run(self, call: ToolCall) -> tuple[AgentToolResult, bool]: ...
+    async def run(self, call: ToolCall, ctx: ToolCallContext) -> tuple[AgentToolResult, bool]: ...
 
 
 class EmptyToolExecutor:
     def specs(self) -> list[ToolSpec]:
         return []
 
-    async def run(self, call: ToolCall) -> tuple[AgentToolResult, bool]:
+    async def run(self, call: ToolCall, ctx: ToolCallContext) -> tuple[AgentToolResult, bool]:
         return AgentToolResult.text(f"Unknown tool: {call.name}"), True
 
 
@@ -97,6 +119,7 @@ class Agent:
         after_tool_call: AfterToolCallHook | None = None,
         before_provider_request: BeforeProviderRequestHook | None = None,
         before_agent_start: BeforeAgentStartHook | None = None,
+        provide_tool_context: ToolContextProvider | None = None,
     ) -> None:
         self.provider = provider
         self.cwd = (cwd or Path.cwd()).resolve()
@@ -112,8 +135,11 @@ class Agent:
         self.after_tool_call = after_tool_call
         self.before_provider_request = before_provider_request
         self.before_agent_start = before_agent_start
+        self.provide_tool_context = provide_tool_context
 
-    async def _execute_tool(self, call: ToolCall) -> tuple[ToolCall, AgentToolResult, bool]:
+    async def _execute_tool(
+        self, call: ToolCall
+    ) -> tuple[ToolCall, AgentToolResult, bool, list[Any]]:
         if self.before_tool_call is not None:
             # The runner's `tool_call` dispatch has no try/except of its own (an extension
             # bug should be visible), but the call site that invokes it converts a thrown
@@ -123,12 +149,17 @@ class Agent:
                 veto = await self.before_tool_call(call)
             except Exception as exc:  # noqa: BLE001 - converted into a tool-visible error.
                 reason = f"Extension failed, blocking execution: {exc}"
-                return call, AgentToolResult.text(reason), True
+                return call, AgentToolResult.text(reason), True, []
             if veto is not None and veto.block:
                 reason = veto.reason or f"Tool call to {call.name!r} blocked by extension."
-                return call, AgentToolResult.text(reason), True
+                return call, AgentToolResult.text(reason), True, []
 
-        result, is_error = await self.tools.run(call)
+        updates: list[Any] = []
+        ctx = ToolCallContext(
+            on_update=updates.append,
+            ext_context=self.provide_tool_context() if self.provide_tool_context else None,
+        )
+        result, is_error = await self.tools.run(call, ctx)
 
         if self.after_tool_call is not None:
             patch = await self.after_tool_call(call, result, is_error)
@@ -140,7 +171,7 @@ class Agent:
                 )
                 is_error = patch.is_error if patch.is_error is not None else is_error
 
-        return call, result, is_error
+        return call, result, is_error, updates
 
     async def run(
         self,
@@ -236,7 +267,11 @@ class Agent:
                 executed = [await self._execute_tool(call) for call in tool_calls]
 
             tool_results: list[ToolResultMessage] = []
-            for call, result, is_error in executed:
+            for call, result, is_error, updates in executed:
+                for update in updates:
+                    yield AgentEvent.tool_execution_update(
+                        call.id, call.name, call.arguments, update
+                    )
                 yield AgentEvent.tool_execution_end(
                     call.id,
                     call.name,

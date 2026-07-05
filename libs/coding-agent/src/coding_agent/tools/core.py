@@ -4,10 +4,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from agent.core import ToolCallContext
 from upstream.models import ToolCall
 from upstream.types import AgentToolResult, ToolSpec
 
-ToolHandler = Callable[[dict[str, Any]], Awaitable[tuple[AgentToolResult, bool]]]
+ToolHandler = Callable[[dict[str, Any], ToolCallContext], Awaitable[tuple[AgentToolResult, bool]]]
 
 
 @dataclass(frozen=True)
@@ -58,11 +59,16 @@ class ToolRegistry:
                 registry.register(tool)
         return registry
 
-    async def run(self, call: ToolCall) -> tuple[AgentToolResult, bool]:
+    async def run(
+        self, call: ToolCall, ctx: ToolCallContext | None = None
+    ) -> tuple[AgentToolResult, bool]:
         tool = self._tools.get(call.name)
         if tool is None:
             return AgentToolResult.text(f"Unknown tool: {call.name}"), True
         try:
-            return await tool.handler(call.arguments)
+            return await tool.handler(call.arguments, ctx or _NOOP_CONTEXT)
         except Exception as exc:  # noqa: BLE001 - tool failures are model-visible results.
             return AgentToolResult.text(f"Tool {call.name} failed: {exc}"), True
+
+
+_NOOP_CONTEXT = ToolCallContext(on_update=lambda _update: None)

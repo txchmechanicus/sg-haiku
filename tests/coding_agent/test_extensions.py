@@ -6,6 +6,7 @@ import pytest
 from agent.core import (
     BeforeAgentStartResult,
     ProviderRequestPayload,
+    ToolCallContext,
     ToolCallHookResult,
     ToolResultHookResult,
 )
@@ -341,7 +342,7 @@ class TestRunnerDispatch:
     def test_register_tools_merges_into_registry(self, tmp_path: Path) -> None:
         from coding_agent.extensions.types import Extension, RegisteredTool, SourceInfo
 
-        async def handler(_args: dict) -> tuple[AgentToolResult, bool]:
+        async def handler(_args: dict, _ctx: ToolCallContext) -> tuple[AgentToolResult, bool]:
             return AgentToolResult.text("done"), False
 
         tool = Tool(name="extra", description="extra tool", parameters={}, handler=handler)
