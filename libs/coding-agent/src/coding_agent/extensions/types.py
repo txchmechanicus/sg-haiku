@@ -123,6 +123,32 @@ class ExtensionContext:
         self._runner.request_compact()
 
 
+# --- Resources discovery -----------------------------------------------------
+#
+# `promptPaths`/`themePaths` are not implemented: prompt templates are a single-file
+# mechanism in sg-haiku (shape mismatch with a path-list model, see `/PLAN.md`), and there
+# is no theme system at all. Only `skillPaths` is wired.
+
+ResourcesDiscoverReason = Literal["startup", "reload"]
+
+
+class ResourcesDiscoverEvent(BaseModel):
+    type: Literal["resources_discover"] = "resources_discover"
+    cwd: str
+    reason: ResourcesDiscoverReason = "startup"
+
+
+class ResourcesDiscoverResult(BaseModel):
+    skillPaths: list[str] | None = None
+
+
+@dataclass(frozen=True)
+class ResourcesDiscoverCollected:
+    """Aggregated across every extension's `resources_discover` handler, in load order."""
+
+    skill_paths: tuple[Path, ...] = ()
+
+
 # --- Session lifecycle ------------------------------------------------------
 #
 # Unlike the internal-only dataclasses above, these use camelCase pydantic `BaseModel` field

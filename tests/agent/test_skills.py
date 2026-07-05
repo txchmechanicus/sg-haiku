@@ -95,6 +95,50 @@ def test_discover_skills_reports_collision_preferring_global(tmp_path: Path, mon
     assert diagnostics[0].path == project_skill
 
 
+def test_discover_skills_scans_extra_paths(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(skills_module, "GLOBAL_SKILLS_DIR", tmp_path / "missing-global")
+    project_dir = tmp_path / "project"
+    extra_dir = tmp_path / "extension-skills"
+    _write_skill(extra_dir / "extra-skill" / "SKILL.md", name="extra-skill", description="E.")
+    loose_file = tmp_path / "loose.md"
+    _write_skill(loose_file, name="loose-skill", description="L.")
+
+    found, diagnostics = discover_skills(project_dir, [extra_dir, loose_file])
+
+    assert {skill.name for skill in found} == {"extra-skill", "loose-skill"}
+    assert diagnostics == []
+
+
+def test_discover_skills_extra_path_never_overrides_project_or_global(
+    tmp_path: Path, monkeypatch
+) -> None:
+    global_dir = tmp_path / "global"
+    monkeypatch.setattr(skills_module, "GLOBAL_SKILLS_DIR", global_dir)
+    _write_skill(global_dir / "same" / "SKILL.md", name="same", description="From global.")
+    project_dir = tmp_path / "project"
+    extra_dir = tmp_path / "extension-skills"
+    _write_skill(extra_dir / "same" / "SKILL.md", name="same", description="From extension.")
+
+    found, diagnostics = discover_skills(project_dir, [extra_dir])
+
+    assert len(found) == 1
+    assert found[0].description == "From global."
+    assert len(diagnostics) == 1
+    assert diagnostics[0].type == "collision"
+
+
+def test_discover_skills_warns_on_missing_extra_path(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(skills_module, "GLOBAL_SKILLS_DIR", tmp_path / "missing-global")
+    project_dir = tmp_path / "project"
+
+    found, diagnostics = discover_skills(project_dir, [tmp_path / "nope"])
+
+    assert found == []
+    assert len(diagnostics) == 1
+    assert diagnostics[0].type == "warning"
+    assert "does not exist" in diagnostics[0].message
+
+
 def test_discover_skills_returns_empty_for_missing_directories(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(skills_module, "GLOBAL_SKILLS_DIR", tmp_path / "missing-global")
 

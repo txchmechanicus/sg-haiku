@@ -38,9 +38,12 @@ class PromptContextBuilder:
         append_system_prompts: list[str] | None = None,
         prompt_template: Path | None = None,
         use_prompt_templates: bool = True,
+        extra_skill_paths: tuple[Path, ...] | list[Path] = (),
     ) -> PromptContext:
         context_files = self.discover_context_files() if include_context_files else []
-        skills, skill_diagnostics = self.discover_skills() if include_skills else ([], [])
+        skills, skill_diagnostics = (
+            self.discover_skills(extra_skill_paths) if include_skills else ([], [])
+        )
         effective_system_prompt = self._effective_system_prompt(
             context_files=context_files,
             skills=skills,
@@ -60,8 +63,10 @@ class PromptContextBuilder:
             skill_diagnostics=skill_diagnostics,
         )
 
-    def discover_skills(self) -> tuple[list[Skill], list[SkillDiagnostic]]:
-        return discover_skills(self.cwd)
+    def discover_skills(
+        self, extra_paths: tuple[Path, ...] | list[Path] = ()
+    ) -> tuple[list[Skill], list[SkillDiagnostic]]:
+        return discover_skills(self.cwd, extra_paths)
 
     def discover_context_files(self) -> list[Path]:
         files: list[Path] = []

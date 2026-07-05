@@ -28,6 +28,9 @@ from coding_agent.extensions.types import (
     ExtensionContext,
     ExtensionError,
     ExtensionErrorListener,
+    ResourcesDiscoverCollected,
+    ResourcesDiscoverEvent,
+    ResourcesDiscoverReason,
     SessionBeforeCompactEvent,
     SessionBeforeCompactResult,
     SessionManagerProtocol,
@@ -270,6 +273,28 @@ class ExtensionRunner:
             messages=messages or None,
             system_prompt=current_system_prompt if current_system_prompt != system_prompt else None,
         )
+
+    # -- resources_discover: every handler's skillPaths are collected (not merged/overridden),
+    #    in extension-load order, then handler-registration order. -----------------------------
+
+    async def emit_resources_discover(
+        self, *, cwd: Path, reason: ResourcesDiscoverReason = "startup"
+    ) -> ResourcesDiscoverCollected:
+        ctx = self.create_context()
+        event = ResourcesDiscoverEvent(cwd=str(cwd), reason=reason)
+        skill_paths: list[Path] = []
+        for extension in self.extensions:
+            handlers = extension.handlers.get("resources_discover")
+            if not handlers:
+                continue
+            for handler in handlers:
+                try:
+                    result = await self._call(handler, event, ctx)
+                    if result is not None and result.skillPaths:
+                        skill_paths.extend(Path(path) for path in result.skillPaths)
+                except Exception as exc:  # noqa: BLE001
+                    self._emit_error(extension, "resources_discover", exc)
+        return ResourcesDiscoverCollected(skill_paths=tuple(skill_paths))
 
     # -- session_before_compact: last non-None result wins; `cancel=True` short-circuits. -----
 

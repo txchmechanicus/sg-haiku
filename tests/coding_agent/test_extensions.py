@@ -359,6 +359,60 @@ class TestRunnerDispatch:
 
         assert "extra" in registry.names()
 
+    @pytest.mark.asyncio
+    async def test_emit_resources_discover_collects_skill_paths(self, tmp_path: Path) -> None:
+        from coding_agent.extensions.types import Extension, ResourcesDiscoverResult, SourceInfo
+
+        seen_events = []
+
+        async def handler_one(event, ctx):
+            seen_events.append(event)
+            return ResourcesDiscoverResult(skillPaths=["a", "b"])
+
+        async def handler_two(event, ctx):
+            return ResourcesDiscoverResult(skillPaths=["c"])
+
+        ext = Extension(
+            path="a", resolved_path="a", source_info=SourceInfo(path="a", resolved_path="a")
+        )
+        ext.handlers["resources_discover"] = [handler_one, handler_two]
+        runner = ExtensionRunner([ext], cwd=tmp_path, session_manager=_session_manager(tmp_path))
+
+        result = await runner.emit_resources_discover(cwd=tmp_path)
+
+        assert [str(p) for p in result.skill_paths] == ["a", "b", "c"]
+        assert seen_events[0].type == "resources_discover"
+        assert seen_events[0].cwd == str(tmp_path)
+        assert seen_events[0].reason == "startup"
+
+    @pytest.mark.asyncio
+    async def test_emit_resources_discover_is_fail_open(self, tmp_path: Path) -> None:
+        from coding_agent.extensions.types import Extension, ResourcesDiscoverResult, SourceInfo
+
+        async def failing(event, ctx):
+            raise RuntimeError("boom")
+
+        async def ok(event, ctx):
+            return ResourcesDiscoverResult(skillPaths=["x"])
+
+        ext = Extension(
+            path="a", resolved_path="a", source_info=SourceInfo(path="a", resolved_path="a")
+        )
+        ext.handlers["resources_discover"] = [failing, ok]
+        errors = []
+        runner = ExtensionRunner(
+            [ext],
+            cwd=tmp_path,
+            session_manager=_session_manager(tmp_path),
+            error_listener=errors.append,
+        )
+
+        result = await runner.emit_resources_discover(cwd=tmp_path)
+
+        assert [str(p) for p in result.skill_paths] == ["x"]
+        assert len(errors) == 1
+        assert "boom" in errors[0].error
+
     def test_has_handlers(self, tmp_path: Path) -> None:
         from coding_agent.extensions.types import Extension, SourceInfo
 
@@ -412,3 +466,43 @@ def activate(api: ExtensionAPI) -> None:
         assert result.exit_code == 0
         assert "Tool ls returned" in result.stdout
         assert "blocked" not in result.stdout
+
+    def test_resources_discover_skill_path_is_offered_to_the_model(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A `resources_discover` handler's `skillPaths` actually reach skill discovery, so
+        the contributed skill shows up in the system prompt's `<available_skills>` block."""
+        monkeypatch.chdir(tmp_path)
+        extra_skills_dir = tmp_path / "vendored-skills"
+        (extra_skills_dir / "vendored-skill").mkdir(parents=True)
+        (extra_skills_dir / "vendored-skill" / "SKILL.md").write_text(
+            "---\nname: vendored-skill\ndescription: A vendored skill.\n---\nDo it.\n",
+            encoding="utf-8",
+        )
+        marker_file = tmp_path / "marker.txt"
+        _write_extension(
+            tmp_path / ".haiku" / "extensions",
+            "vendor_skills.py",
+            f'''
+from coding_agent.extensions import ExtensionAPI, ResourcesDiscoverResult
+
+
+async def _discover(event, ctx):
+    return ResourcesDiscoverResult(skillPaths=[{str(extra_skills_dir)!r}])
+
+
+async def _check_system_prompt(prompt, system_prompt, ctx):
+    with open({str(marker_file)!r}, "w") as f:
+        f.write("found" if "vendored-skill" in ctx.get_system_prompt() else "missing")
+
+
+def activate(api: ExtensionAPI) -> None:
+    api.on("resources_discover", _discover)
+    api.on("before_agent_start", _check_system_prompt)
+''',
+        )
+
+        result = CliRunner().invoke(app, ["hi", "--no-tools", "--no-session"])
+
+        assert result.exit_code == 0
+        assert marker_file.read_text() == "found"

@@ -10,7 +10,6 @@ import typer.core
 from agent import Agent
 from agent.compaction import compact, estimate_context_tokens, should_compact
 from agent.context import PromptContextBuilder
-from agent.core import SYSTEM_PROMPT
 from agent.entries import EntryRef
 from agent.events import AgentEvent
 from agent.sessions import (
@@ -242,15 +241,6 @@ def main(
         if list_models:
             _print_models(models_config)
             return
-        prompt_context = PromptContextBuilder(cwd=Path.cwd()).build(
-            prompt=prompt,
-            include_context_files=not no_context_files,
-            include_skills=not no_skills,
-            system_prompt=system_prompt,
-            append_system_prompts=append_system_prompt,
-            prompt_template=prompt_template,
-            use_prompt_templates=not no_prompt_templates,
-        )
         config = ProviderConfig(
             provider=provider,
             model=model,
@@ -261,9 +251,14 @@ def main(
         )
         asyncio.run(
             _run(
-                prompt_context.prompt,
+                prompt,
                 config,
-                system_prompt=prompt_context.system_prompt,
+                no_context_files=no_context_files,
+                no_skills=no_skills,
+                system_prompt=system_prompt,
+                append_system_prompt=append_system_prompt,
+                prompt_template=prompt_template,
+                no_prompt_templates=no_prompt_templates,
                 use_tools=not no_tools,
                 mode=mode,
                 thinking=thinking,
@@ -292,7 +287,12 @@ async def _run(
     prompt: str,
     config: ProviderConfig,
     *,
+    no_context_files: bool,
+    no_skills: bool,
     system_prompt: str | None,
+    append_system_prompt: list[str] | None,
+    prompt_template: Path | None,
+    no_prompt_templates: bool,
     use_tools: bool,
     mode: str,
     thinking: str | None,
@@ -327,7 +327,6 @@ async def _run(
         resume=resume,
         fork=fork,
     )
-    effective_system_prompt = system_prompt or SYSTEM_PROMPT
 
     runner = await build_extension_runner(
         cwd=cwd,
@@ -342,6 +341,20 @@ async def _run(
     else:
         session_reason = "new"
     await runner.notify("session_start", SessionStartEvent(reason=session_reason))
+    resources = await runner.emit_resources_discover(cwd=cwd, reason="startup")
+
+    prompt_context = PromptContextBuilder(cwd=cwd).build(
+        prompt=prompt,
+        include_context_files=not no_context_files,
+        include_skills=not no_skills,
+        system_prompt=system_prompt,
+        append_system_prompts=append_system_prompt,
+        prompt_template=prompt_template,
+        use_prompt_templates=not no_prompt_templates,
+        extra_skill_paths=resources.skill_paths,
+    )
+    prompt = prompt_context.prompt
+    effective_system_prompt = prompt_context.system_prompt
 
     async def before_tool_call(call):  # noqa: ANN001, ANN202 - shape matches agent.core hooks
         if not runner.has_handlers("tool_call"):

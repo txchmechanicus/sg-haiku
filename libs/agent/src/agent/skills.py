@@ -31,30 +31,62 @@ class SkillDiagnostic:
     path: Path
 
 
-def discover_skills(cwd: Path) -> tuple[list[Skill], list[SkillDiagnostic]]:
+def discover_skills(
+    cwd: Path, extra_paths: tuple[Path, ...] | list[Path] = ()
+) -> tuple[list[Skill], list[SkillDiagnostic]]:
+    """`extra_paths` are extension-contributed skill files/directories (from the
+    `resources_discover` extension event's `skillPaths`), scanned after the global/project
+    directories so a same-named skill from an extension never overrides a user- or
+    project-defined one."""
     skills: list[Skill] = []
     diagnostics: list[SkillDiagnostic] = []
     first_seen_path: dict[str, Path] = {}
+
+    def _add(skill: Skill) -> None:
+        if skill.name in first_seen_path:
+            diagnostics.append(
+                SkillDiagnostic(
+                    type="collision",
+                    message=(
+                        f'skill "{skill.name}" already defined at '
+                        f'{first_seen_path[skill.name]}; ignoring duplicate at '
+                        f'{skill.file_path}'
+                    ),
+                    path=skill.file_path,
+                )
+            )
+            return
+        first_seen_path[skill.name] = skill.file_path
+        skills.append(skill)
 
     for directory in (GLOBAL_SKILLS_DIR, cwd / PROJECT_SKILLS_DIR_NAME):
         dir_skills, dir_diagnostics = _scan_directory(directory)
         diagnostics.extend(dir_diagnostics)
         for skill in dir_skills:
-            if skill.name in first_seen_path:
-                diagnostics.append(
-                    SkillDiagnostic(
-                        type="collision",
-                        message=(
-                            f'skill "{skill.name}" already defined at '
-                            f'{first_seen_path[skill.name]}; ignoring duplicate at '
-                            f'{skill.file_path}'
-                        ),
-                        path=skill.file_path,
-                    )
+            _add(skill)
+
+    for raw_path in extra_paths:
+        path = raw_path if raw_path.is_absolute() else cwd / raw_path
+        if not path.exists():
+            diagnostics.append(
+                SkillDiagnostic(type="warning", message="skill path does not exist", path=path)
+            )
+            continue
+        if path.is_dir():
+            path_skills, path_diagnostics = _scan_directory(path)
+        elif path.is_file() and path.suffix.lower() == ".md":
+            skill, path_diagnostics = parse_skill_file(path)
+            path_skills = [skill] if skill is not None else []
+        else:
+            diagnostics.append(
+                SkillDiagnostic(
+                    type="warning", message="skill path is not a directory or .md file", path=path
                 )
-                continue
-            first_seen_path[skill.name] = skill.file_path
-            skills.append(skill)
+            )
+            continue
+        diagnostics.extend(path_diagnostics)
+        for skill in path_skills:
+            _add(skill)
 
     return skills, diagnostics
 
