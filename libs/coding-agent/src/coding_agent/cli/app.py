@@ -10,6 +10,7 @@ import typer.core
 from agent import Agent
 from agent.compaction import compact, estimate_context_tokens, should_compact
 from agent.context import PromptContextBuilder
+from agent.core import SYSTEM_PROMPT
 from agent.entries import EntryRef
 from agent.events import AgentEvent
 from agent.sessions import (
@@ -23,8 +24,17 @@ from upstream.models import AssistantMessage, SystemMessage, TextContent
 from upstream.registry import ModelRegistry
 
 from coding_agent.cli.console import console, error_console
-from coding_agent.cli.helpers import build_tool_registry, parse_tool_list
+from coding_agent.cli.helpers import build_extension_runner, build_tool_registry, parse_tool_list
 from coding_agent.config import ProviderConfig
+from coding_agent.extensions import (
+    ExtensionRunner,
+    ModelSelectEvent,
+    SessionBeforeCompactEvent,
+    SessionCompactEvent,
+    SessionShutdownEvent,
+    SessionStartEvent,
+    ThinkingLevelSelectEvent,
+)
 
 
 class _HaikuGroup(typer.core.TyperGroup):
@@ -301,12 +311,12 @@ async def _run(
     compaction_reserve_tokens: int = 4096,
     compaction_keep_tokens: int = 8000,
 ) -> None:
+    cwd = Path.cwd()
     registry = build_tool_registry(
         no_builtin_tools=no_builtin_tools,
         tools=tools,
         exclude_tools=exclude_tools,
     )
-    agent = Agent(provider=await config.build(), tools=registry)
     initial_entries, session, compaction_summary, compaction_details = _build_session_manager(
         session_path=session_path,
         session_dir=session_dir,
@@ -317,10 +327,99 @@ async def _run(
         resume=resume,
         fork=fork,
     )
+    effective_system_prompt = system_prompt or SYSTEM_PROMPT
+
+    runner = await build_extension_runner(
+        cwd=cwd,
+        registry=registry,
+        session_manager=session,
+        get_system_prompt=lambda: effective_system_prompt,
+    )
+    if fork is not None:
+        session_reason = "fork"
+    elif continue_session or resume:
+        session_reason = "resume"
+    else:
+        session_reason = "new"
+    await runner.notify("session_start", SessionStartEvent(reason=session_reason))
+
+    async def before_tool_call(call):  # noqa: ANN001, ANN202 - shape matches agent.core hooks
+        if not runner.has_handlers("tool_call"):
+            return None
+        return await runner.emit_tool_call(call)
+
+    async def after_tool_call(call, result, is_error):  # noqa: ANN001, ANN202
+        if not runner.has_handlers("tool_result"):
+            return None
+        return await runner.emit_tool_result(call, result, is_error)
+
+    async def before_provider_request(payload):  # noqa: ANN001, ANN202
+        if not runner.has_handlers("before_provider_request"):
+            return payload
+        return await runner.emit_before_provider_request(payload)
+
+    async def before_agent_start(prompt_text, prompt_system_prompt):  # noqa: ANN001, ANN202
+        if not runner.has_handlers("before_agent_start"):
+            return None
+        return await runner.emit_before_agent_start(prompt_text, prompt_system_prompt)
+
+    try:
+        agent = Agent(
+            provider=await config.build(),
+            tools=registry,
+            system_prompt=effective_system_prompt,
+            before_tool_call=before_tool_call,
+            after_tool_call=after_tool_call,
+            before_provider_request=before_provider_request,
+            before_agent_start=before_agent_start,
+        )
+        await _run_agent(
+            agent,
+            runner,
+            prompt,
+            session=session,
+            config=config,
+            mode=mode,
+            thinking=thinking,
+            use_tools=use_tools,
+            initial_entries=initial_entries,
+            compaction_summary=compaction_summary,
+            compaction_details=compaction_details,
+            compaction_enabled=compaction_enabled,
+            compaction_reserve_tokens=compaction_reserve_tokens,
+            compaction_keep_tokens=compaction_keep_tokens,
+        )
+    finally:
+        await runner.notify("session_shutdown", SessionShutdownEvent(reason="quit"))
+
+
+async def _run_agent(
+    agent: Agent,
+    runner: ExtensionRunner,
+    prompt: str,
+    *,
+    session: SessionManager,
+    config: ProviderConfig,
+    mode: str,
+    thinking: str | None,
+    use_tools: bool,
+    initial_entries: list[EntryRef],
+    compaction_summary: str | None,
+    compaction_details: dict[str, object] | None,
+    compaction_enabled: bool,
+    compaction_reserve_tokens: int,
+    compaction_keep_tokens: int,
+) -> None:
     _provider_id, _model_id = config.model_info()
     session.record_model_change(provider=_provider_id, model_id=_model_id)
+    await runner.notify(
+        "model_select", ModelSelectEvent(provider=_provider_id, modelId=_model_id)
+    )
     if thinking is not None and thinking != "off":
         session.record_thinking_level_change(thinking_level=thinking)
+        await runner.notify(
+            "thinking_level_select", ThinkingLevelSelectEvent(thinkingLevel=thinking)
+        )
     stream_json = mode == "json"
     if stream_json:
         print(json.dumps(session.header(), ensure_ascii=False))
@@ -329,53 +428,84 @@ async def _run(
     if compaction_enabled and context_window is not None:
         context_tokens = estimate_context_tokens(initial_entries)
         if should_compact(context_tokens, context_window, compaction_reserve_tokens):
-            result = await compact(
-                agent.provider,
-                initial_entries,
-                previous_summary=compaction_summary,
-                keep_recent_tokens=compaction_keep_tokens,
-            )
-            compaction_record = session.record_compaction(
-                summary=result.summary,
-                first_kept_entry_id=result.first_kept_entry_id,
-                tokens_before=result.tokens_before,
-                details=result.details.to_json() if result.details else None,
-                from_hook=result.from_hook,
-            )
-            cut_position = next(
-                (
-                    index
-                    for index, entry in enumerate(initial_entries)
-                    if entry.id == result.first_kept_entry_id
-                ),
-                len(initial_entries),
-            )
-            initial_entries = initial_entries[cut_position:]
-            compaction_summary = result.summary
-            compaction_details = result.details.to_json() if result.details else None
-            if stream_json:
-                print(json.dumps(compaction_record, ensure_ascii=False))
+            provided_summary: str | None = None
+            cancel_compaction = False
+            if runner.has_handlers("session_before_compact"):
+                before_result = await runner.emit_session_before_compact(
+                    SessionBeforeCompactEvent(
+                        reason="threshold", previousSummary=compaction_summary
+                    )
+                )
+                if before_result is not None:
+                    cancel_compaction = before_result.cancel
+                    provided_summary = before_result.summary
 
-    effective_system_prompt = system_prompt or agent.system_prompt
+            if not cancel_compaction:
+                result = await compact(
+                    agent.provider,
+                    initial_entries,
+                    previous_summary=compaction_summary,
+                    keep_recent_tokens=compaction_keep_tokens,
+                    provided_summary=provided_summary,
+                )
+                compaction_record = session.record_compaction(
+                    summary=result.summary,
+                    first_kept_entry_id=result.first_kept_entry_id,
+                    tokens_before=result.tokens_before,
+                    details=result.details.to_json() if result.details else None,
+                    from_hook=result.from_hook,
+                )
+                await runner.notify(
+                    "session_compact",
+                    SessionCompactEvent(
+                        summary=result.summary,
+                        firstKeptEntryId=result.first_kept_entry_id,
+                        tokensBefore=result.tokens_before,
+                        fromExtension=provided_summary is not None,
+                    ),
+                )
+                cut_position = next(
+                    (
+                        index
+                        for index, entry in enumerate(initial_entries)
+                        if entry.id == result.first_kept_entry_id
+                    ),
+                    len(initial_entries),
+                )
+                initial_entries = initial_entries[cut_position:]
+                compaction_summary = result.summary
+                compaction_details = result.details.to_json() if result.details else None
+                if stream_json:
+                    print(json.dumps(compaction_record, ensure_ascii=False))
+
     initial_messages = [entry.message for entry in initial_entries]
     summary_message = _build_compaction_summary_message(compaction_summary, compaction_details)
     if summary_message is not None:
         initial_messages = [summary_message, *initial_messages]
+    if runner.has_handlers("context"):
+        initial_messages = await runner.emit_context(initial_messages)
 
     had_error = False
     events: list[AgentEvent] = []
     async for event in agent.run(
         prompt,
         initial_messages=initial_messages,
-        system_prompt=effective_system_prompt,
+        system_prompt=agent.system_prompt,
         use_tools=use_tools,
     ):
         events.append(event)
         session.record_event(event)
         if event.type == "message_end" and event.message is not None:
+            if runner.has_handlers("message_end"):
+                replacement = await runner.emit_message_end(event.message)
+                if replacement is not None:
+                    event.message = replacement
             session.record_message(event.message)
             if isinstance(event.message, AssistantMessage) and event.message.stopReason == "error":
                 had_error = True
+        elif runner.has_handlers(event.type):
+            await runner.notify(event.type, event)
+
         if event.type == "message_end" and isinstance(event.message, AssistantMessage):
             if mode == "text":
                 text = _assistant_text(event.message)

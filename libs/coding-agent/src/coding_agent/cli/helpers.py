@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
+from coding_agent.cli.console import error_console
+from coding_agent.extensions import ExtensionRunner, discover_and_load_extensions
+from coding_agent.extensions.types import SessionManagerProtocol
 from coding_agent.tools import ToolRegistry, default_registry
 
 
@@ -18,6 +22,31 @@ def build_tool_registry(
             "(no tools are registered to filter)."
         )
     return registry.filtered(include=tools, exclude=exclude_tools)
+
+
+async def build_extension_runner(
+    *,
+    cwd: Path,
+    registry: ToolRegistry,
+    session_manager: SessionManagerProtocol,
+    get_system_prompt: Callable[[], str] = lambda: "",
+) -> ExtensionRunner:
+    """Discover `.haiku/extensions/` (project + global), load them, and register any
+    extension-contributed tools into `registry`. Load errors are reported (per-extension
+    isolation) but never abort startup."""
+    result = await discover_and_load_extensions(None, cwd)
+    for load_error in result.errors:
+        error_console.print(
+            f"[yellow]extension warning:[/yellow] {load_error.path}: {load_error.error}"
+        )
+    runner = ExtensionRunner(
+        result.extensions,
+        cwd=cwd,
+        session_manager=session_manager,
+        get_system_prompt=get_system_prompt,
+    )
+    runner.register_tools(registry)
+    return runner
 
 
 def parse_tool_list(value: str | None) -> set[str] | None:

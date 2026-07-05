@@ -6,6 +6,14 @@ from pathlib import Path
 
 from agent import AgentEvent
 from agent.sessions import SessionManager
+from coding_agent.extensions.types import (
+    ModelSelectEvent,
+    SessionBeforeCompactEvent,
+    SessionCompactEvent,
+    SessionShutdownEvent,
+    SessionStartEvent,
+    ThinkingLevelSelectEvent,
+)
 from upstream import (
     AssistantMessage,
     AssistantMessageEvent,
@@ -188,3 +196,27 @@ def test_session_compaction_entry_golden_fixture(tmp_path: Path) -> None:
         tokens_before=1000,
     )
     assert with_fixed_timestamp(entry) == load_json("session_compaction_entry.json")
+
+
+def test_extension_event_golden_fixtures() -> None:
+    assert dump_model(SessionStartEvent(reason="new")) == load_json("session_start_event.json")
+    assert dump_model(SessionShutdownEvent(reason="quit")) == load_json(
+        "session_shutdown_event.json"
+    )
+    assert dump_model(
+        SessionBeforeCompactEvent(reason="threshold", previousSummary="prior summary")
+    ) == load_json("session_before_compact_event.json")
+    assert dump_model(
+        SessionCompactEvent(
+            summary="Compacted context.",
+            firstKeptEntryId="entry-1",
+            tokensBefore=1000,
+            fromExtension=True,
+        )
+    ) == load_json("session_compact_event.json")
+    assert dump_model(ModelSelectEvent(provider="mock", modelId="mock")) == load_json(
+        "model_select_event.json"
+    )
+    assert dump_model(ThinkingLevelSelectEvent(thinkingLevel="high")) == load_json(
+        "thinking_level_select_event.json"
+    )
