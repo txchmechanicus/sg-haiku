@@ -96,6 +96,8 @@ class ToolExecutor(Protocol):
 
     async def run(self, call: ToolCall, ctx: ToolCallContext) -> tuple[AgentToolResult, bool]: ...
 
+    def execution_mode_for(self, name: str) -> Literal["sequential", "parallel"] | None: ...
+
 
 class EmptyToolExecutor:
     def specs(self) -> list[ToolSpec]:
@@ -103,6 +105,9 @@ class EmptyToolExecutor:
 
     async def run(self, call: ToolCall, ctx: ToolCallContext) -> tuple[AgentToolResult, bool]:
         return AgentToolResult.text(f"Unknown tool: {call.name}"), True
+
+    def execution_mode_for(self, name: str) -> Literal["sequential", "parallel"] | None:
+        return None
 
 
 class Agent:
@@ -172,6 +177,34 @@ class Agent:
                 is_error = patch.is_error if patch.is_error is not None else is_error
 
         return call, result, is_error, updates
+
+    def _effective_execution_mode(self, name: str) -> Literal["sequential", "parallel"]:
+        return self.tools.execution_mode_for(name) or self.tool_execution_mode
+
+    async def _execute_tool_calls(
+        self, tool_calls: list[ToolCall]
+    ) -> list[tuple[ToolCall, AgentToolResult, bool, list[Any]]]:
+        """Groups consecutive calls sharing an effective "parallel" mode into one
+        `asyncio.gather` batch; a "sequential" call always runs alone. Per-tool
+        `execution_mode` overrides `self.tool_execution_mode`."""
+        executed: list[tuple[ToolCall, AgentToolResult, bool, list[Any]]] = []
+        index = 0
+        while index < len(tool_calls):
+            call = tool_calls[index]
+            if self._effective_execution_mode(call.name) == "parallel":
+                group = [call]
+                index += 1
+                while (
+                    index < len(tool_calls)
+                    and self._effective_execution_mode(tool_calls[index].name) == "parallel"
+                ):
+                    group.append(tool_calls[index])
+                    index += 1
+                executed.extend(await asyncio.gather(*[self._execute_tool(c) for c in group]))
+            else:
+                executed.append(await self._execute_tool(call))
+                index += 1
+        return executed
 
     async def run(
         self,
@@ -259,12 +292,7 @@ class Agent:
             for call in tool_calls:
                 yield AgentEvent.tool_execution_start(call.id, call.name, call.arguments)
 
-            if self.tool_execution_mode == "parallel":
-                executed = list(
-                    await asyncio.gather(*[self._execute_tool(call) for call in tool_calls])
-                )
-            else:
-                executed = [await self._execute_tool(call) for call in tool_calls]
+            executed = await self._execute_tool_calls(tool_calls)
 
             tool_results: list[ToolResultMessage] = []
             for call, result, is_error, updates in executed:

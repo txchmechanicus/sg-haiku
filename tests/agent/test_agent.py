@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from upstream import (
     UserMessage,
 )
 from upstream.types import AgentToolResult
+from upstream.models import TextContent
 
 
 async def collect(agent: Agent, prompt: str, *, use_tools: bool = True):
@@ -299,6 +301,9 @@ class UpdatingToolExecutor:
         ctx.on_update({"step": 2})
         return AgentToolResult.text(f"ext_context={ctx.ext_context!r}"), False
 
+    def execution_mode_for(self, name: str) -> str | None:
+        return None
+
 
 class ProgressToolProvider(ModelProvider):
     async def stream(
@@ -355,3 +360,93 @@ async def test_agent_passes_ext_context_to_tools(tmp_path: Path) -> None:
         if event.type == "message_end" and getattr(event.message, "role", None) == "toolResult"
     ]
     assert tool_results[0].content[0].text == "ext_context='my-ext-context'"
+
+
+class MultiToolCallProvider(ModelProvider):
+    """Requests three tool calls in a single turn, then finishes on the next turn."""
+
+    async def stream(
+        self,
+        messages: list[Message],
+        tools: list[ToolSpec],
+        system_prompt: str | None = None,
+    ) -> AsyncIterator[AssistantMessageEvent]:
+        if messages[-1].role == "toolResult":
+            message = AssistantMessage(content=[TextContent(text="done")], stopReason="stop")
+            yield AssistantMessageEvent(type="start", partial=message)
+            yield AssistantMessageEvent(type="done", reason="stop", message=message)
+            return
+        calls = [
+            ToolCall(id="1", name="a", arguments={}),
+            ToolCall(id="2", name="b", arguments={}),
+            ToolCall(id="3", name="c", arguments={}),
+        ]
+        message = AssistantMessage(content=calls, stopReason="toolUse")
+        yield AssistantMessageEvent(type="start", partial=message)
+        yield AssistantMessageEvent(type="done", reason="toolUse", message=message)
+
+
+class RecordingToolExecutor:
+    """Records `start:<name>`/`end:<name>` around each call, yielding control via
+    `asyncio.sleep(0)` so concurrently-gathered calls interleave observably."""
+
+    def __init__(self, modes: dict[str, str | None]) -> None:
+        self._modes = modes
+        self.log: list[str] = []
+
+    def specs(self) -> list[ToolSpec]:
+        return [ToolSpec(name=name, description="", parameters={}) for name in self._modes]
+
+    async def run(self, call: ToolCall, ctx) -> tuple[AgentToolResult, bool]:  # noqa: ANN001
+        self.log.append(f"start:{call.name}")
+        await asyncio.sleep(0)
+        self.log.append(f"end:{call.name}")
+        return AgentToolResult.text("ok"), False
+
+    def execution_mode_for(self, name: str) -> str | None:
+        return self._modes.get(name)
+
+
+@pytest.mark.asyncio
+async def test_consecutive_parallel_tools_interleave(tmp_path: Path) -> None:
+    tools = RecordingToolExecutor({"a": "parallel", "b": "parallel", "c": "parallel"})
+    agent = Agent(
+        provider=MultiToolCallProvider(), tools=tools, cwd=tmp_path, tool_execution_mode="parallel"
+    )
+
+    await collect(agent, "go")
+
+    assert tools.log.index("start:a") < tools.log.index("end:a")
+    assert tools.log[:3] == ["start:a", "start:b", "start:c"]
+    assert tools.log[3:] == ["end:a", "end:b", "end:c"]
+
+
+@pytest.mark.asyncio
+async def test_sequential_global_mode_runs_one_at_a_time(tmp_path: Path) -> None:
+    tools = RecordingToolExecutor({"a": None, "b": None, "c": None})
+    agent = Agent(
+        provider=MultiToolCallProvider(),
+        tools=tools,
+        cwd=tmp_path,
+        tool_execution_mode="sequential",
+    )
+
+    await collect(agent, "go")
+
+    assert tools.log == ["start:a", "end:a", "start:b", "end:b", "start:c", "end:c"]
+
+
+@pytest.mark.asyncio
+async def test_per_tool_execution_mode_override_breaks_up_parallel_group(
+    tmp_path: Path,
+) -> None:
+    """`b` overrides to "sequential" despite the agent's global "parallel" default, so it
+    must run alone, splitting `a` and `c` into their own single-call groups around it."""
+    tools = RecordingToolExecutor({"a": "parallel", "b": "sequential", "c": "parallel"})
+    agent = Agent(
+        provider=MultiToolCallProvider(), tools=tools, cwd=tmp_path, tool_execution_mode="parallel"
+    )
+
+    await collect(agent, "go")
+
+    assert tools.log == ["start:a", "end:a", "start:b", "end:b", "start:c", "end:c"]

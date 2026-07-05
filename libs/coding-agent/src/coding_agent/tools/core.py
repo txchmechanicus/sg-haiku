@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from agent.core import ToolCallContext
 from upstream.models import ToolCall
@@ -18,6 +18,9 @@ class Tool:
     parameters: dict[str, Any]
     handler: ToolHandler
     label: str | None = None
+    execution_mode: Literal["sequential", "parallel"] | None = None
+    """Per-tool override of `Agent.tool_execution_mode`. `None` means the agent's global
+    default applies."""
 
     def spec(self) -> ToolSpec:
         return ToolSpec(
@@ -39,6 +42,10 @@ class ToolRegistry:
 
     def specs(self) -> list[ToolSpec]:
         return [tool.spec() for tool in self._tools.values()]
+
+    def execution_mode_for(self, name: str) -> Literal["sequential", "parallel"] | None:
+        tool = self._tools.get(name)
+        return tool.execution_mode if tool is not None else None
 
     def filtered(
         self,

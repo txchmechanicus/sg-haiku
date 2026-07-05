@@ -12,6 +12,29 @@ from coding_agent.tools import (
 from upstream import ToolCall
 
 
+def test_registry_execution_mode_for(tmp_path: Path) -> None:
+    from coding_agent.tools.core import Tool, ToolRegistry
+
+    async def handler(_args, _ctx):  # noqa: ANN001
+        raise NotImplementedError
+
+    registry = ToolRegistry()
+    registry.register(Tool(name="plain", description="", parameters={}, handler=handler))
+    registry.register(
+        Tool(
+            name="seq",
+            description="",
+            parameters={},
+            handler=handler,
+            execution_mode="sequential",
+        )
+    )
+
+    assert registry.execution_mode_for("plain") is None
+    assert registry.execution_mode_for("seq") == "sequential"
+    assert registry.execution_mode_for("missing") is None
+
+
 def test_registry_names_and_filtering(tmp_path: Path) -> None:
     registry = default_registry(tmp_path)
 
