@@ -554,3 +554,31 @@ def activate(api: ExtensionAPI) -> None:
 
         assert result.exit_code == 0
         assert marker_file.read_text() == "found"
+
+    def test_after_provider_response_fires_with_duration_and_no_transport_metadata(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        marker_file = tmp_path / "marker.txt"
+        _write_extension(
+            tmp_path / ".haiku" / "extensions",
+            "track_latency.py",
+            f'''
+from coding_agent.extensions import ExtensionAPI
+
+
+async def _after_response(event, ctx):
+    ok = event.status is None and event.headers == {{}} and event.durationMs >= 0
+    with open({str(marker_file)!r}, "w") as f:
+        f.write("found" if ok else "missing")
+
+
+def activate(api: ExtensionAPI) -> None:
+    api.on("after_provider_response", _after_response)
+''',
+        )
+
+        result = CliRunner().invoke(app, ["hi", "--no-tools", "--no-session"])
+
+        assert result.exit_code == 0
+        assert marker_file.read_text() == "found"

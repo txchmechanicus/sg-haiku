@@ -5,6 +5,7 @@ from coding_agent.extensions.api import ExtensionAPI
 from coding_agent.extensions.loader import discover_and_load_extensions
 from coding_agent.extensions.runner import ExtensionRunner
 from coding_agent.extensions.types import (
+    AfterProviderResponseEvent,
     ContextEventResult,
     Extension,
     ExtensionContext,
@@ -24,6 +25,7 @@ from coding_agent.extensions.types import (
 )
 
 __all__ = [
+    "AfterProviderResponseEvent",
     "ContextEventResult",
     "Extension",
     "ExtensionAPI",

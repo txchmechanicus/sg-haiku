@@ -26,6 +26,7 @@ from coding_agent.cli.console import console, error_console
 from coding_agent.cli.helpers import build_extension_runner, build_tool_registry, parse_tool_list
 from coding_agent.config import ProviderConfig
 from coding_agent.extensions import (
+    AfterProviderResponseEvent,
     ExtensionRunner,
     ModelSelectEvent,
     SessionBeforeCompactEvent,
@@ -373,6 +374,16 @@ async def _run(
             return payload
         return await runner.emit_before_provider_request(payload)
 
+    async def after_provider_response(info):  # noqa: ANN001, ANN202
+        if not runner.has_handlers("after_provider_response"):
+            return
+        await runner.notify(
+            "after_provider_response",
+            AfterProviderResponseEvent(
+                durationMs=info.duration_ms, status=info.status, headers=info.headers
+            ),
+        )
+
     async def before_agent_start(prompt_text, prompt_system_prompt):  # noqa: ANN001, ANN202
         if not runner.has_handlers("before_agent_start"):
             return None
@@ -386,6 +397,7 @@ async def _run(
             before_tool_call=before_tool_call,
             after_tool_call=after_tool_call,
             before_provider_request=before_provider_request,
+            after_provider_response=after_provider_response,
             before_agent_start=before_agent_start,
             provide_tool_context=runner.create_context,
         )

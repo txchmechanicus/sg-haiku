@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -61,11 +62,25 @@ class BeforeAgentStartResult:
     system_prompt: str | None = None
 
 
+@dataclass(frozen=True)
+class AfterProviderResponseInfo:
+    """Reported once per completed (non-raising) `ModelProvider.stream()` call.
+    `status`/`headers` are always `None`/`{}`: `ModelProvider` doesn't surface
+    transport-level response metadata to the agent loop, so this is honest about not having
+    it rather than inventing values. `duration_ms` is real wall-clock time spent inside the
+    `stream()` call."""
+
+    duration_ms: float
+    status: int | None = None
+    headers: dict[str, str] = field(default_factory=dict)
+
+
 BeforeToolCallHook = Callable[[ToolCall], Awaitable[ToolCallHookResult | None]]
 AfterToolCallHook = Callable[
     [ToolCall, AgentToolResult, bool], Awaitable[ToolResultHookResult | None]
 ]
 BeforeProviderRequestHook = Callable[[ProviderRequestPayload], Awaitable[ProviderRequestPayload]]
+AfterProviderResponseHook = Callable[[AfterProviderResponseInfo], Awaitable[None]]
 BeforeAgentStartHook = Callable[[str, str], Awaitable[BeforeAgentStartResult | None]]
 ToolContextProvider = Callable[[], object | None]
 
@@ -123,6 +138,7 @@ class Agent:
         before_tool_call: BeforeToolCallHook | None = None,
         after_tool_call: AfterToolCallHook | None = None,
         before_provider_request: BeforeProviderRequestHook | None = None,
+        after_provider_response: AfterProviderResponseHook | None = None,
         before_agent_start: BeforeAgentStartHook | None = None,
         provide_tool_context: ToolContextProvider | None = None,
     ) -> None:
@@ -133,12 +149,13 @@ class Agent:
         self.system_prompt = system_prompt
         self.tool_execution_mode = tool_execution_mode
         # Hook seams: assignable callbacks (`before_tool_call`/`after_tool_call`,
-        # `before_provider_request`, `before_agent_start`). `Agent` itself stays
-        # hook-mechanism-agnostic: a single callable each, which `coding_agent`'s extension
-        # runner binds to fan out across loaded extensions.
+        # `before_provider_request`/`after_provider_response`, `before_agent_start`). `Agent`
+        # itself stays hook-mechanism-agnostic: a single callable each, which `coding_agent`'s
+        # extension runner binds to fan out across loaded extensions.
         self.before_tool_call = before_tool_call
         self.after_tool_call = after_tool_call
         self.before_provider_request = before_provider_request
+        self.after_provider_response = after_provider_response
         self.before_agent_start = before_agent_start
         self.provide_tool_context = provide_tool_context
 
@@ -243,6 +260,7 @@ class Agent:
             )
             if self.before_provider_request is not None:
                 request_payload = await self.before_provider_request(request_payload)
+            stream_started_at = time.monotonic()
             async for assistant_event in self.provider.stream(
                 request_payload.messages,
                 request_payload.specs,
@@ -256,6 +274,10 @@ class Agent:
                     if assistant_event.type == "start":
                         yield AgentEvent.message_start(current_message)
                     yield AgentEvent.message_update(current_message, assistant_event)
+
+            if self.after_provider_response is not None:
+                duration_ms = (time.monotonic() - stream_started_at) * 1000
+                await self.after_provider_response(AfterProviderResponseInfo(duration_ms=duration_ms))
 
             if assistant_message is None:
                 assistant_message = AssistantMessage(

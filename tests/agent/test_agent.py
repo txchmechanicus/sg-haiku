@@ -289,6 +289,37 @@ async def test_before_agent_start_hook_injects_messages_and_system_prompt() -> N
     ]
 
 
+@pytest.mark.asyncio
+async def test_after_provider_response_hook_fires_once_per_completed_stream() -> None:
+    from agent.core import AfterProviderResponseInfo
+
+    provider = CapturingProvider()
+    infos: list[AfterProviderResponseInfo] = []
+
+    async def after_provider_response(info: AfterProviderResponseInfo) -> None:
+        infos.append(info)
+
+    agent = Agent(provider=provider, after_provider_response=after_provider_response)
+
+    await collect(agent, "hello", use_tools=False)
+
+    assert len(infos) == 1
+    assert infos[0].status is None
+    assert infos[0].headers == {}
+    assert infos[0].duration_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_after_provider_response_hook_is_not_called_when_unset() -> None:
+    provider = CapturingProvider()
+
+    agent = Agent(provider=provider)
+
+    events = await collect(agent, "hello", use_tools=False)
+
+    assert events[-1].type == "agent_end"
+
+
 class UpdatingToolExecutor:
     """A minimal ToolExecutor whose tool reports incremental progress via ctx.on_update and
     reads ctx.ext_context, for exercising the ToolCallContext plumbing end-to-end."""

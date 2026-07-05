@@ -196,6 +196,21 @@ class SessionCompactEvent(BaseModel):
     fromExtension: bool
 
 
+# --- Provider response ---------------------------------------------------
+
+
+class AfterProviderResponseEvent(BaseModel):
+    """`status`/`headers` are always `None`/`{}` — `upstream.providers.ModelProvider`
+    doesn't surface transport-level response metadata to the agent loop, so this is honest
+    about not having it rather than inventing values. `durationMs` is real wall-clock time
+    spent inside the provider's `stream()` call."""
+
+    type: Literal["after_provider_response"] = "after_provider_response"
+    durationMs: float
+    status: int | None = None
+    headers: dict[str, str] = {}
+
+
 # --- Model / thinking level --------------------------------------------------
 
 
