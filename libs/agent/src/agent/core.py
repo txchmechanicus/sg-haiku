@@ -125,6 +125,10 @@ class EmptyToolExecutor:
         return None
 
 
+def _coerce_user_message(message: str | Message) -> Message:
+    return UserMessage(content=message) if isinstance(message, str) else message
+
+
 class Agent:
     def __init__(
         self,
@@ -159,6 +163,8 @@ class Agent:
         self.before_agent_start = before_agent_start
         self.provide_tool_context = provide_tool_context
         self._abort_event: asyncio.Event | None = None
+        self._steering_queue: list[Message] = []
+        self._followup_queue: list[Message] = []
 
     def abort(self) -> None:
         """Requests cancellation of the currently active `run()` call, if any. Safe to call
@@ -166,6 +172,23 @@ class Agent:
         event loop, no locking needed). A no-op if no run is active."""
         if self._abort_event is not None:
             self._abort_event.set()
+
+    def steer(self, message: str | Message) -> None:
+        """Queues a message to be injected before the next provider turn of the active (or
+        next) run. Persists across `run()` calls until drained. Safe to call from a
+        concurrently scheduled task."""
+        self._steering_queue.append(_coerce_user_message(message))
+
+    def follow_up(self, message: str | Message) -> None:
+        """Queues a message to be injected only once the run would otherwise stop (no more
+        tool calls and no pending steering messages). Persists across `run()` calls until
+        drained. Safe to call from a concurrently scheduled task."""
+        self._followup_queue.append(_coerce_user_message(message))
+
+    @staticmethod
+    def _drain(queue: list[Message]) -> list[Message]:
+        drained, queue[:] = list(queue), []
+        return drained
 
     async def _execute_tool(
         self, call: ToolCall
@@ -276,6 +299,12 @@ class Agent:
         try:
             for _ in range(self.max_tool_iterations + 1):
                 yield AgentEvent.turn_start()
+
+                for steering_message in self._drain(self._steering_queue):
+                    messages.append(steering_message)
+                    yield AgentEvent.message_start(steering_message)
+                    yield AgentEvent.message_end(steering_message)
+
                 assistant_message: AssistantMessage | None = None
                 request_payload = ProviderRequestPayload(
                     messages=messages,
@@ -325,6 +354,16 @@ class Agent:
                     part for part in assistant_message.content if isinstance(part, ToolCall)
                 ]
                 if not tool_calls:
+                    injected = self._drain(self._steering_queue) or self._drain(
+                        self._followup_queue
+                    )
+                    if injected:
+                        yield AgentEvent.turn_end(assistant_message, [])
+                        for injected_message in injected:
+                            messages.append(injected_message)
+                            yield AgentEvent.message_start(injected_message)
+                            yield AgentEvent.message_end(injected_message)
+                        continue
                     yield AgentEvent.turn_end(assistant_message, [])
                     yield AgentEvent.agent_end(messages)
                     return

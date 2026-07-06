@@ -717,3 +717,77 @@ async def test_provider_error_stop_reason_skips_tool_dispatch(tmp_path: Path) ->
         if event.type == "message_end" and getattr(event.message, "role", None) == "assistant"
     ]
     assert assistant_messages[-1].stopReason == "error"
+
+
+@pytest.mark.asyncio
+async def test_steer_before_run_reaches_first_provider_call(tmp_path: Path) -> None:
+    provider = CapturingProvider()
+    agent = Agent(provider=provider, cwd=tmp_path)
+    agent.steer("steer-msg")
+
+    await collect(agent, "hi")
+
+    contents = [
+        message.content for message in provider.messages if getattr(message, "role", None) == "user"
+    ]
+    assert contents == ["hi", "steer-msg"]
+
+
+@pytest.mark.asyncio
+async def test_followup_message_after_final_response_prevents_agent_end(tmp_path: Path) -> None:
+    provider = CapturingProvider()
+    agent = Agent(provider=provider, cwd=tmp_path)
+    agent.follow_up("continue")
+
+    turn_starts = 0
+    async for event in agent.run("hi"):
+        if event.type == "turn_start":
+            turn_starts += 1
+
+    assert turn_starts == 2
+    contents = [
+        message.content for message in provider.messages if getattr(message, "role", None) == "user"
+    ]
+    assert contents == ["hi", "continue"]
+
+
+@pytest.mark.asyncio
+async def test_steering_takes_priority_over_followup_at_stop_point(tmp_path: Path) -> None:
+    provider = CapturingProvider()
+    agent = Agent(provider=provider, cwd=tmp_path)
+    agent.follow_up("followup-msg")
+
+    turn_starts = 0
+    async for event in agent.run("hi"):
+        if event.type == "turn_start":
+            turn_starts += 1
+        if (
+            event.type == "message_end"
+            and getattr(event.message, "role", None) == "assistant"
+            and turn_starts == 1
+        ):
+            agent.steer("steer-msg")
+
+    assert turn_starts == 3
+    contents = [
+        message.content for message in provider.messages if getattr(message, "role", None) == "user"
+    ]
+    assert contents == ["hi", "steer-msg", "followup-msg"]
+
+
+@pytest.mark.asyncio
+async def test_followup_queued_but_iteration_cap_exhausted_still_stops(tmp_path: Path) -> None:
+    provider = CapturingProvider()
+    agent = Agent(provider=provider, cwd=tmp_path, max_tool_iterations=0)
+    agent.follow_up("continue")
+
+    events = await collect(agent, "hi")
+
+    assert events[-1].type == "agent_end"
+    assistant_messages = [
+        event.message
+        for event in events
+        if event.type == "message_end" and getattr(event.message, "role", None) == "assistant"
+    ]
+    assert assistant_messages[-1].stopReason == "error"
+    assert "Stopped after 0 tool iterations" in assistant_messages[-1].errorMessage
