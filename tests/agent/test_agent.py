@@ -514,6 +514,49 @@ class RaisingToolExecutor:
         return None
 
 
+class TerminatingToolExecutor:
+    def __init__(self, terminate: dict[str, bool | None]) -> None:
+        self._terminate = terminate
+
+    def specs(self) -> list[ToolSpec]:
+        return [ToolSpec(name=name, description="", parameters={}) for name in self._terminate]
+
+    async def run(self, call: ToolCall, ctx) -> tuple[AgentToolResult, bool]:  # noqa: ANN001
+        return AgentToolResult.text("ok", terminate=self._terminate.get(call.name)), False
+
+    def execution_mode_for(self, name: str) -> str | None:
+        return "parallel"
+
+
+@pytest.mark.asyncio
+async def test_terminate_true_on_single_call_ends_run_without_another_turn(
+    tmp_path: Path,
+) -> None:
+    tools = TerminatingToolExecutor({"a": True})
+    agent = Agent(provider=SingleToolCallProvider(), tools=tools, cwd=tmp_path)
+
+    events = await collect(agent, "go")
+
+    assert [event.type for event in events].count("turn_start") == 1
+    assert events[-1].type == "agent_end"
+
+
+@pytest.mark.asyncio
+async def test_terminate_requires_every_result_in_batch_to_agree(tmp_path: Path) -> None:
+    tools = TerminatingToolExecutor({"a": True, "b": None, "c": True})
+    agent = Agent(provider=MultiToolCallProvider(), tools=tools, cwd=tmp_path)
+
+    events = await collect(agent, "go")
+
+    assert [event.type for event in events].count("turn_start") == 2
+    assistant_messages = [
+        event.message
+        for event in events
+        if event.type == "message_end" and getattr(event.message, "role", None) == "assistant"
+    ]
+    assert assistant_messages[-1].content[0].text == "done"
+
+
 @pytest.mark.asyncio
 async def test_tool_executor_exception_becomes_tool_error_and_run_continues(
     tmp_path: Path,

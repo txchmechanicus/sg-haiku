@@ -201,6 +201,14 @@ class Agent:
     def _effective_execution_mode(self, name: str) -> Literal["sequential", "parallel"]:
         return self.tools.execution_mode_for(name) or self.tool_execution_mode
 
+    @staticmethod
+    def _all_results_terminate(
+        executed: list[tuple[ToolCall, AgentToolResult, bool, list[Any]]],
+    ) -> bool:
+        """All-must-agree: the batch signals early completion only if every tool result in
+        it set `terminate=True` (a single non-terminating result vetoes early completion)."""
+        return bool(executed) and all(result.terminate is True for _, result, _, _ in executed)
+
     async def _execute_tool_calls(
         self, tool_calls: list[ToolCall]
     ) -> list[tuple[ToolCall, AgentToolResult, bool, list[Any]]]:
@@ -355,6 +363,10 @@ class Agent:
                     yield AgentEvent.message_end(result_message)
 
                 yield AgentEvent.turn_end(assistant_message, tool_results)
+
+                if self._all_results_terminate(executed):
+                    yield AgentEvent.agent_end(messages)
+                    return
 
             error_message = AssistantMessage(
                 content=[
