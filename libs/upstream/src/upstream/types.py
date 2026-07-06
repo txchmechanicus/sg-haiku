@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
 from upstream.models import ImageContent, TextContent
+
+ThinkingLevel = Literal["minimal", "low", "medium", "high", "xhigh"]
 
 
 class ToolSpec(BaseModel):

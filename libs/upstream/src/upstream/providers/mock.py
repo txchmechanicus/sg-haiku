@@ -11,7 +11,7 @@ from upstream.models import (
     ToolCall,
 )
 from upstream.providers.base import ModelProvider
-from upstream.types import ToolSpec
+from upstream.types import ThinkingLevel, ToolSpec
 
 
 class MockProvider(ModelProvider):
@@ -21,6 +21,7 @@ class MockProvider(ModelProvider):
         tools: list[ToolSpec],
         system_prompt: str | None = None,
         *,
+        reasoning: ThinkingLevel | None = None,
         abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         last = messages[-1]

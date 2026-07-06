@@ -23,7 +23,7 @@ from upstream.models import (
 )
 from upstream.providers.base import ModelProvider
 from upstream.providers.sse import iter_sse_data
-from upstream.types import ToolSpec
+from upstream.types import ThinkingLevel, ToolSpec
 
 # The Messages API itself is the real public api.anthropic.com surface; the OAuth-specific
 # headers/system-prompt/tool naming below are what's required to be accepted on the
@@ -35,6 +35,14 @@ CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for C
 CLAUDE_CODE_USER_AGENT = "claude-cli/2.1.75"
 OAUTH_BETA_HEADER = "claude-code-20250219,oauth-2025-04-20"
 DEFAULT_MAX_TOKENS = 8192
+
+_THINKING_BUDGET_TOKENS: dict[ThinkingLevel, int] = {
+    "minimal": 1024,
+    "low": 2048,
+    "medium": 8192,
+    "high": 16384,
+    "xhigh": 16384,
+}
 
 _CLAUDE_CODE_TOOL_NAMES = [
     "Read",
@@ -107,6 +115,7 @@ class AnthropicMessagesProvider(ModelProvider):
         tools: list[ToolSpec],
         system_prompt: str | None = None,
         *,
+        reasoning: ThinkingLevel | None = None,
         abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         message = AssistantMessage(
@@ -115,7 +124,7 @@ class AnthropicMessagesProvider(ModelProvider):
             provider="anthropic",
             model=self.model,
         )
-        payload = self._build_payload(messages, tools, system_prompt)
+        payload = self._build_payload(messages, tools, system_prompt, reasoning)
 
         yield AssistantMessageEvent(type="start", partial=message)
 
@@ -339,6 +348,7 @@ class AnthropicMessagesProvider(ModelProvider):
         messages: list[Message],
         tools: list[ToolSpec],
         system_prompt: str | None,
+        reasoning: ThinkingLevel | None = None,
     ) -> dict[str, Any]:
         system_blocks: list[dict[str, str]] = []
         if self.is_oauth:
@@ -360,6 +370,10 @@ class AnthropicMessagesProvider(ModelProvider):
         if tools:
             payload["tools"] = [_convert_tool(tool, self.is_oauth) for tool in tools]
             payload["tool_choice"] = {"type": "auto"}
+        if reasoning is not None:
+            budget = _THINKING_BUDGET_TOKENS[reasoning]
+            payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            payload["max_tokens"] = max(payload["max_tokens"], budget + 1024)
         return payload
 
 

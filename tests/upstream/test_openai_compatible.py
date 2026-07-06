@@ -262,6 +262,34 @@ async def test_openai_compatible_request_includes_system_prompt() -> None:
     assert request["messages"][1] == {"role": "user", "content": "hello"}
 
 
+@pytest.mark.asyncio
+async def test_openai_compatible_reasoning_none_leaves_payload_unchanged() -> None:
+    seen_requests: list[dict[str, object]] = []
+    provider = provider_with_response(
+        sse({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        seen_requests=seen_requests,
+    )
+
+    await collect(provider)
+
+    assert "reasoning_effort" not in seen_requests[0]
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_reasoning_sets_effort_and_clamps_xhigh() -> None:
+    seen_requests: list[dict[str, object]] = []
+    provider = provider_with_response(
+        sse({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        seen_requests=seen_requests,
+    )
+
+    await collect(provider, reasoning="medium")
+    assert seen_requests[-1]["reasoning_effort"] == "medium"
+
+    await collect(provider, reasoning="xhigh")
+    assert seen_requests[-1]["reasoning_effort"] == "high"
+
+
 def test_openai_compatible_formats_tool_result_message() -> None:
     provider = OpenAICompatibleProvider(model="gpt-test", api_key="test-key")
     message = ToolResultMessage(

@@ -130,6 +130,26 @@ def test_non_oauth_keeps_original_tool_name() -> None:
     assert seen_requests[0]["tools"][0]["name"] == "read"
 
 
+def test_reasoning_none_leaves_payload_unchanged() -> None:
+    seen_requests: list[dict[str, object]] = []
+    provider = provider_with_response(sse({"type": "message_stop"}), seen_requests=seen_requests)
+
+    asyncio.run(collect(provider))
+
+    assert "thinking" not in seen_requests[0]
+    assert seen_requests[0]["max_tokens"] == provider.max_tokens
+
+
+def test_reasoning_adds_thinking_block_and_bumps_max_tokens() -> None:
+    seen_requests: list[dict[str, object]] = []
+    provider = provider_with_response(sse({"type": "message_stop"}), seen_requests=seen_requests)
+
+    asyncio.run(collect(provider, reasoning="medium"))
+
+    assert seen_requests[0]["thinking"] == {"type": "enabled", "budget_tokens": 8192}
+    assert seen_requests[0]["max_tokens"] == 8192 + 1024
+
+
 @pytest.mark.asyncio
 async def test_streams_text_output() -> None:
     provider = provider_with_response(

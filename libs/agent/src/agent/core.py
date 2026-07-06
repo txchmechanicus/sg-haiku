@@ -17,7 +17,7 @@ from upstream.models import (
     UserMessage,
 )
 from upstream.providers import ModelProvider
-from upstream.types import AgentToolResult, ToolSpec
+from upstream.types import AgentToolResult, ThinkingLevel, ToolSpec
 
 from agent.events import AgentEvent
 
@@ -139,6 +139,7 @@ class Agent:
         max_tool_iterations: int = 8,
         system_prompt: str = SYSTEM_PROMPT,
         tool_execution_mode: Literal["sequential", "parallel"] = "parallel",
+        default_reasoning: ThinkingLevel | None = None,
         before_tool_call: BeforeToolCallHook | None = None,
         after_tool_call: AfterToolCallHook | None = None,
         before_provider_request: BeforeProviderRequestHook | None = None,
@@ -152,6 +153,7 @@ class Agent:
         self.max_tool_iterations = max_tool_iterations
         self.system_prompt = system_prompt
         self.tool_execution_mode = tool_execution_mode
+        self.default_reasoning = default_reasoning
         # Hook seams: assignable callbacks (`before_tool_call`/`after_tool_call`,
         # `before_provider_request`/`after_provider_response`, `before_agent_start`). `Agent`
         # itself stays hook-mechanism-agnostic: a single callable each, which `coding_agent`'s
@@ -275,9 +277,11 @@ class Agent:
         initial_messages: list[Message] | None = None,
         system_prompt: str | None = None,
         use_tools: bool = True,
+        reasoning: ThinkingLevel | None = None,
     ) -> AsyncGenerator[AgentEvent, None]:
         messages: list[Message] = list(initial_messages or [])
         effective_system_prompt = system_prompt or self.system_prompt
+        effective_reasoning = reasoning if reasoning is not None else self.default_reasoning
         self._abort_event = asyncio.Event()
 
         if self.before_agent_start is not None:
@@ -318,6 +322,7 @@ class Agent:
                     request_payload.messages,
                     request_payload.specs,
                     system_prompt=request_payload.system_prompt,
+                    reasoning=effective_reasoning,
                     abort_event=self._abort_event,
                 ):
                     current_message = (

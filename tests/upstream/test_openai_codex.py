@@ -109,6 +109,30 @@ def test_request_includes_tools_when_provided() -> None:
     ]
 
 
+def test_reasoning_none_leaves_payload_unchanged() -> None:
+    seen_requests: list[dict[str, object]] = []
+    provider = provider_with_response(
+        sse({"type": "response.completed", "response": {}}), seen_requests=seen_requests
+    )
+
+    asyncio.run(collect(provider))
+
+    assert "reasoning" not in seen_requests[0]
+
+
+def test_reasoning_sets_effort_and_clamps_xhigh() -> None:
+    seen_requests: list[dict[str, object]] = []
+    provider = provider_with_response(
+        sse({"type": "response.completed", "response": {}}), seen_requests=seen_requests
+    )
+
+    asyncio.run(collect(provider, reasoning="medium"))
+    assert seen_requests[-1]["reasoning"] == {"effort": "medium"}
+
+    asyncio.run(collect(provider, reasoning="xhigh"))
+    assert seen_requests[-1]["reasoning"] == {"effort": "high"}
+
+
 @pytest.mark.asyncio
 async def test_streams_text_output() -> None:
     provider = provider_with_response(

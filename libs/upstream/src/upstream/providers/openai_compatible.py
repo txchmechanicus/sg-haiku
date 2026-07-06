@@ -19,7 +19,7 @@ from upstream.models import (
 )
 from upstream.providers.base import ModelProvider
 from upstream.providers.sse import iter_sse_data
-from upstream.types import ToolSpec
+from upstream.types import ThinkingLevel, ToolSpec
 
 
 @dataclass
@@ -56,6 +56,7 @@ class OpenAICompatibleProvider(ModelProvider):
         tools: list[ToolSpec],
         system_prompt: str | None = None,
         *,
+        reasoning: ThinkingLevel | None = None,
         abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         message = AssistantMessage(
@@ -72,6 +73,8 @@ class OpenAICompatibleProvider(ModelProvider):
         }
         if tools:
             payload["tools"] = [self._format_tool(tool) for tool in tools]
+        if reasoning is not None:
+            payload["reasoning_effort"] = "high" if reasoning == "xhigh" else reasoning
 
         yield AssistantMessageEvent(type="start", partial=message)
 
