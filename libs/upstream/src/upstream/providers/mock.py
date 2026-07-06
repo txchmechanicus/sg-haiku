@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 
 from upstream.models import (
@@ -19,6 +20,8 @@ class MockProvider(ModelProvider):
         messages: list[Message],
         tools: list[ToolSpec],
         system_prompt: str | None = None,
+        *,
+        abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         last = messages[-1]
         if last.role == "toolResult":

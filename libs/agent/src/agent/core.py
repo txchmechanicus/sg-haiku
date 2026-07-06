@@ -158,10 +158,21 @@ class Agent:
         self.after_provider_response = after_provider_response
         self.before_agent_start = before_agent_start
         self.provide_tool_context = provide_tool_context
+        self._abort_event: asyncio.Event | None = None
+
+    def abort(self) -> None:
+        """Requests cancellation of the currently active `run()` call, if any. Safe to call
+        from a concurrently scheduled task while `run()`'s generator is suspended (single
+        event loop, no locking needed). A no-op if no run is active."""
+        if self._abort_event is not None:
+            self._abort_event.set()
 
     async def _execute_tool(
         self, call: ToolCall
     ) -> tuple[ToolCall, AgentToolResult, bool, list[Any]]:
+        if self._abort_event is not None and self._abort_event.is_set():
+            return call, AgentToolResult.text("Operation aborted"), True, []
+
         if self.before_tool_call is not None:
             # The runner's `tool_call` dispatch has no try/except of its own (an extension
             # bug should be visible), but the call site that invokes it converts a thrown
@@ -244,6 +255,7 @@ class Agent:
     ) -> AsyncGenerator[AgentEvent, None]:
         messages: list[Message] = list(initial_messages or [])
         effective_system_prompt = system_prompt or self.system_prompt
+        self._abort_event = asyncio.Event()
 
         if self.before_agent_start is not None:
             preface = await self.before_agent_start(prompt, effective_system_prompt)
@@ -277,6 +289,7 @@ class Agent:
                     request_payload.messages,
                     request_payload.specs,
                     system_prompt=request_payload.system_prompt,
+                    abort_event=self._abort_event,
                 ):
                     current_message = (
                         assistant_event.partial or assistant_event.message or assistant_event.error
@@ -363,6 +376,10 @@ class Agent:
                     yield AgentEvent.message_end(result_message)
 
                 yield AgentEvent.turn_end(assistant_message, tool_results)
+
+                if self._abort_event.is_set():
+                    yield AgentEvent.agent_end(messages)
+                    return
 
                 if self._all_results_terminate(executed):
                     yield AgentEvent.agent_end(messages)

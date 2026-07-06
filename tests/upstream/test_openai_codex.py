@@ -194,6 +194,23 @@ async def test_response_failed_yields_error_event() -> None:
     assert events[-1].error.stopReason == "error"
 
 
+@pytest.mark.asyncio
+async def test_abort_event_set_before_stream_yields_aborted() -> None:
+    provider = provider_with_response(
+        sse(
+            {"type": "response.completed", "response": {}},
+        )
+    )
+    abort_event = asyncio.Event()
+    abort_event.set()
+
+    events = await collect(provider, abort_event=abort_event)
+
+    assert events[-1].type == "error"
+    assert events[-1].error is not None
+    assert events[-1].error.stopReason == "aborted"
+
+
 def test_convert_input_items_round_trips_tool_call_and_result() -> None:
     from upstream.providers.openai_codex import _convert_input_items
 

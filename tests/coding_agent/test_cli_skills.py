@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -23,6 +24,8 @@ class _CapturingProvider(ModelProvider):
         messages: list[Message],
         tools: list[ToolSpec],
         system_prompt: str | None = None,
+        *,
+        abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         self.seen_system_prompts.append(system_prompt)
         message = AssistantMessage(content=[TextContent(text="ok")], stopReason="stop")

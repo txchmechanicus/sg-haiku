@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 
@@ -19,6 +20,8 @@ class ModelProvider(ABC):
         messages: list[Message],
         tools: list[ToolSpec],
         system_prompt: str | None = None,
+        *,
+        abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         """Yield AssistantMessageEvent objects for one assistant response."""
 

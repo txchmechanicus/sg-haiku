@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -54,6 +55,8 @@ class OpenAICompatibleProvider(ModelProvider):
         messages: list[Message],
         tools: list[ToolSpec],
         system_prompt: str | None = None,
+        *,
+        abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         message = AssistantMessage(
             content=[],
@@ -89,6 +92,8 @@ class OpenAICompatibleProvider(ModelProvider):
                 ) as response:
                     response.raise_for_status()
                     async for data in iter_sse_data(response):
+                        if abort_event is not None and abort_event.is_set():
+                            break
                         if data == "[DONE]":
                             break
                         chunk = json.loads(data)
@@ -199,6 +204,12 @@ class OpenAICompatibleProvider(ModelProvider):
                 toolCall=tool_call,
                 partial=message,
             )
+
+        if abort_event is not None and abort_event.is_set():
+            message.stopReason = "aborted"
+            message.errorMessage = "Operation aborted"
+            yield AssistantMessageEvent(type="error", reason="aborted", error=message)
+            return
 
         message.stopReason = _map_finish_reason(finish_reason, has_tool_calls=bool(tool_buffers))
         yield AssistantMessageEvent(type="done", reason=message.stopReason, message=message)

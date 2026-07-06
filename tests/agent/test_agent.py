@@ -86,6 +86,8 @@ class AlwaysToolProvider(ModelProvider):
         messages: list[Message],
         tools: list[ToolSpec],
         system_prompt: str | None = None,
+        *,
+        abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         call = ToolCall(id="call-1", name="missing", arguments={})
         message = AssistantMessage(content=[call], stopReason="toolUse")
@@ -126,6 +128,8 @@ class CapturingProvider(ModelProvider):
         messages: list[Message],
         tools: list[ToolSpec],
         system_prompt: str | None = None,
+        *,
+        abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         self.messages = list(messages)
         self.system_prompt = system_prompt
@@ -342,6 +346,8 @@ class ProgressToolProvider(ModelProvider):
         messages: list[Message],
         tools: list[ToolSpec],
         system_prompt: str | None = None,
+        *,
+        abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         last = messages[-1]
         if last.role == "toolResult":
@@ -401,6 +407,8 @@ class MultiToolCallProvider(ModelProvider):
         messages: list[Message],
         tools: list[ToolSpec],
         system_prompt: str | None = None,
+        *,
+        abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         if messages[-1].role == "toolResult":
             message = AssistantMessage(content=[TextContent(text="done")], stopReason="stop")
@@ -491,6 +499,8 @@ class SingleToolCallProvider(ModelProvider):
         messages: list[Message],
         tools: list[ToolSpec],
         system_prompt: str | None = None,
+        *,
+        abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         if messages[-1].role == "toolResult":
             message = AssistantMessage(content=[TextContent(text="done")], stopReason="stop")
@@ -617,6 +627,8 @@ class ErrorWithToolCallProvider(ModelProvider):
         messages: list[Message],
         tools: list[ToolSpec],
         system_prompt: str | None = None,
+        *,
+        abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         call = ToolCall(id="1", name="a", arguments={})
         message = AssistantMessage(
@@ -626,6 +638,67 @@ class ErrorWithToolCallProvider(ModelProvider):
         )
         yield AssistantMessageEvent(type="start", partial=message)
         yield AssistantMessageEvent(type="error", reason="error", error=message)
+
+
+class AbortingToolExecutor:
+    """Calls `agent.abort()` while executing "a", then records which calls actually ran."""
+
+    def __init__(self) -> None:
+        self.agent: Agent | None = None
+        self.log: list[str] = []
+
+    def specs(self) -> list[ToolSpec]:
+        return [ToolSpec(name=name, description="", parameters={}) for name in ("a", "b", "c")]
+
+    async def run(self, call: ToolCall, ctx) -> tuple[AgentToolResult, bool]:  # noqa: ANN001
+        self.log.append(call.name)
+        if call.name == "a":
+            assert self.agent is not None
+            self.agent.abort()
+        return AgentToolResult.text("ok"), False
+
+    def execution_mode_for(self, name: str) -> str | None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_abort_called_early_does_not_hang_the_run(tmp_path: Path) -> None:
+    agent = Agent(provider=MockProvider(), cwd=tmp_path)
+
+    gen = agent.run("hello")
+    first_event = await gen.__anext__()
+    assert first_event.type == "agent_start"
+    agent.abort()
+
+    remaining = [event async for event in gen]
+
+    assert remaining[-1].type == "agent_end"
+
+
+@pytest.mark.asyncio
+async def test_abort_skips_not_yet_started_calls_and_ends_run(tmp_path: Path) -> None:
+    tools = AbortingToolExecutor()
+    agent = Agent(
+        provider=MultiToolCallProvider(),
+        tools=tools,
+        cwd=tmp_path,
+        tool_execution_mode="sequential",
+    )
+    tools.agent = agent
+
+    events = await collect(agent, "go")
+
+    assert tools.log == ["a"]
+    tool_results = [
+        event.message
+        for event in events
+        if event.type == "message_end" and getattr(event.message, "role", None) == "toolResult"
+    ]
+    assert [tr.isError for tr in tool_results] == [False, True, True]
+    assert "Operation aborted" in tool_results[1].content[0].text
+    assert "Operation aborted" in tool_results[2].content[0].text
+    assert [event.type for event in events].count("turn_start") == 1
+    assert events[-1].type == "agent_end"
 
 
 @pytest.mark.asyncio
