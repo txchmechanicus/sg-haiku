@@ -520,6 +520,7 @@ async def _run_agent(
         initial_messages=initial_messages,
         system_prompt=agent.system_prompt,
         use_tools=use_tools,
+        reasoning=thinking if thinking not in (None, "off") else None,
     ):
         events.append(event)
         session.record_event(event)

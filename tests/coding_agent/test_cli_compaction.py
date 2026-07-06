@@ -27,6 +27,7 @@ class _CapturingProvider(ModelProvider):
         tools: list[ToolSpec],
         system_prompt: str | None = None,
         *,
+        reasoning: object | None = None,
         abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         self.seen_messages.append(list(messages))

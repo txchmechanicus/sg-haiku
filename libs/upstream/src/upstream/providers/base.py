@@ -10,7 +10,7 @@ from upstream.models import (
     AssistantResponse,
     Message,
 )
-from upstream.types import ToolSpec
+from upstream.types import ThinkingLevel, ToolSpec
 
 
 class ModelProvider(ABC):
@@ -21,6 +21,7 @@ class ModelProvider(ABC):
         tools: list[ToolSpec],
         system_prompt: str | None = None,
         *,
+        reasoning: ThinkingLevel | None = None,
         abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         """Yield AssistantMessageEvent objects for one assistant response."""

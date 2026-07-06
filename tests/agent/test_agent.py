@@ -87,6 +87,7 @@ class AlwaysToolProvider(ModelProvider):
         tools: list[ToolSpec],
         system_prompt: str | None = None,
         *,
+        reasoning: object | None = None,
         abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         call = ToolCall(id="call-1", name="missing", arguments={})
@@ -122,6 +123,7 @@ class CapturingProvider(ModelProvider):
     def __init__(self) -> None:
         self.messages: list[Message] = []
         self.system_prompt: str | None = None
+        self.reasoning: object | None = None
 
     async def stream(
         self,
@@ -129,10 +131,12 @@ class CapturingProvider(ModelProvider):
         tools: list[ToolSpec],
         system_prompt: str | None = None,
         *,
+        reasoning: object | None = None,
         abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         self.messages = list(messages)
         self.system_prompt = system_prompt
+        self.reasoning = reasoning
         message = AssistantMessage(content=[], stopReason="stop")
         yield AssistantMessageEvent(type="start", partial=message)
         yield AssistantMessageEvent(type="done", reason="stop", message=message)
@@ -180,6 +184,29 @@ async def test_agent_passes_system_prompt_to_provider(tmp_path: Path) -> None:
         )
     ]
     assert provider.system_prompt == "custom system prompt"
+
+
+@pytest.mark.asyncio
+async def test_agent_passes_reasoning_to_provider(tmp_path: Path) -> None:
+    provider = CapturingProvider()
+
+    agent = Agent(provider=provider, cwd=tmp_path)
+    await collect(agent, "current", use_tools=False)
+    assert provider.reasoning is None
+
+    agent_with_default = Agent(provider=provider, cwd=tmp_path, default_reasoning="medium")
+    await collect(agent_with_default, "current", use_tools=False)
+    assert provider.reasoning == "medium"
+
+    _ = [
+        event
+        async for event in agent_with_default.run(
+            "current",
+            use_tools=False,
+            reasoning="high",
+        )
+    ]
+    assert provider.reasoning == "high"
 
 
 @pytest.mark.asyncio
@@ -347,6 +374,7 @@ class ProgressToolProvider(ModelProvider):
         tools: list[ToolSpec],
         system_prompt: str | None = None,
         *,
+        reasoning: object | None = None,
         abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         last = messages[-1]
@@ -408,6 +436,7 @@ class MultiToolCallProvider(ModelProvider):
         tools: list[ToolSpec],
         system_prompt: str | None = None,
         *,
+        reasoning: object | None = None,
         abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         if messages[-1].role == "toolResult":
@@ -500,6 +529,7 @@ class SingleToolCallProvider(ModelProvider):
         tools: list[ToolSpec],
         system_prompt: str | None = None,
         *,
+        reasoning: object | None = None,
         abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         if messages[-1].role == "toolResult":
@@ -628,6 +658,7 @@ class ErrorWithToolCallProvider(ModelProvider):
         tools: list[ToolSpec],
         system_prompt: str | None = None,
         *,
+        reasoning: object | None = None,
         abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         call = ToolCall(id="1", name="a", arguments={})

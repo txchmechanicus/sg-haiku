@@ -24,7 +24,7 @@ from upstream.models import (
 from upstream.oauth import decode_jwt_payload
 from upstream.providers.base import ModelProvider
 from upstream.providers.sse import iter_sse_data
-from upstream.types import ToolSpec
+from upstream.types import ThinkingLevel, ToolSpec
 
 # This is OpenAI's internal ChatGPT-backend "Responses API" surface used by the official
 # Codex CLI/OAuth login -- not the public api.openai.com/v1/chat/completions format.
@@ -70,6 +70,7 @@ class OpenAICodexProvider(ModelProvider):
         tools: list[ToolSpec],
         system_prompt: str | None = None,
         *,
+        reasoning: ThinkingLevel | None = None,
         abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         message = AssistantMessage(
@@ -78,7 +79,7 @@ class OpenAICodexProvider(ModelProvider):
             provider="openai-codex",
             model=self.model,
         )
-        payload = self._build_payload(messages, tools, system_prompt)
+        payload = self._build_payload(messages, tools, system_prompt, reasoning)
 
         yield AssistantMessageEvent(type="start", partial=message)
 
@@ -290,6 +291,7 @@ class OpenAICodexProvider(ModelProvider):
         messages: list[Message],
         tools: list[ToolSpec],
         system_prompt: str | None,
+        reasoning: ThinkingLevel | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.model,
@@ -304,6 +306,9 @@ class OpenAICodexProvider(ModelProvider):
             payload["tools"] = [_convert_tool(tool) for tool in tools]
             payload["tool_choice"] = "auto"
             payload["parallel_tool_calls"] = True
+        if reasoning is not None:
+            effort = "high" if reasoning == "xhigh" else reasoning
+            payload["reasoning"] = {"effort": effort}
         return payload
 
 
