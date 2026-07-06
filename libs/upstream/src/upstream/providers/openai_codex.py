@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -25,10 +26,9 @@ from upstream.providers.base import ModelProvider
 from upstream.providers.sse import iter_sse_data
 from upstream.types import ToolSpec
 
-# Reverse-engineered from Pi's packages/ai/src/api/openai-codex-responses.ts. This is OpenAI's
-# internal ChatGPT-backend "Responses API" surface used by the official Codex CLI/OAuth login --
-# not the public api.openai.com/v1/chat/completions format. Unverified against a live account;
-# see PLANS.md for the caveat.
+# This is OpenAI's internal ChatGPT-backend "Responses API" surface used by the official
+# Codex CLI/OAuth login -- not the public api.openai.com/v1/chat/completions format.
+# Unverified against a live account; see PLANS.md for the caveat.
 DEFAULT_BASE_URL = "https://chatgpt.com/backend-api"
 JWT_ACCOUNT_CLAIM_PATH = "https://api.openai.com/auth"
 DEFAULT_INSTRUCTIONS = "You are a helpful assistant."
@@ -69,6 +69,8 @@ class OpenAICodexProvider(ModelProvider):
         messages: list[Message],
         tools: list[ToolSpec],
         system_prompt: str | None = None,
+        *,
+        abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         message = AssistantMessage(
             content=[],
@@ -98,6 +100,8 @@ class OpenAICodexProvider(ModelProvider):
                 ) as response:
                     response.raise_for_status()
                     async for data in iter_sse_data(response):
+                        if abort_event is not None and abort_event.is_set():
+                            break
                         if not data:
                             continue
                         event = json.loads(data)
@@ -257,6 +261,12 @@ class OpenAICodexProvider(ModelProvider):
                 errorMessage=str(exc),
             )
             yield AssistantMessageEvent(type="error", error=error)
+            return
+
+        if abort_event is not None and abort_event.is_set():
+            message.stopReason = "aborted"
+            message.errorMessage = "Operation aborted"
+            yield AssistantMessageEvent(type="error", reason="aborted", error=message)
             return
 
         message.stopReason = stop_reason

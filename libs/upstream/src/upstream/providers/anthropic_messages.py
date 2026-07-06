@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -24,10 +25,10 @@ from upstream.providers.base import ModelProvider
 from upstream.providers.sse import iter_sse_data
 from upstream.types import ToolSpec
 
-# Reverse-engineered from Pi's packages/ai/src/api/anthropic-messages.ts. The Messages API itself
-# is the real public api.anthropic.com surface; the OAuth-specific headers/system-prompt/tool
-# naming below are what's required to be accepted on the OAuth-gated (Claude Pro/Max
-# subscription) path -- see oauth_anthropic.py for the identity note.
+# The Messages API itself is the real public api.anthropic.com surface; the OAuth-specific
+# headers/system-prompt/tool naming below are what's required to be accepted on the
+# OAuth-gated (Claude Pro/Max subscription) path -- see oauth_anthropic.py for the identity
+# note.
 DEFAULT_BASE_URL = "https://api.anthropic.com/v1"
 ANTHROPIC_VERSION = "2023-06-01"
 CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
@@ -105,6 +106,8 @@ class AnthropicMessagesProvider(ModelProvider):
         messages: list[Message],
         tools: list[ToolSpec],
         system_prompt: str | None = None,
+        *,
+        abort_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         message = AssistantMessage(
             content=[],
@@ -135,6 +138,8 @@ class AnthropicMessagesProvider(ModelProvider):
                 ) as response:
                     response.raise_for_status()
                     async for data in iter_sse_data(response):
+                        if abort_event is not None and abort_event.is_set():
+                            break
                         if not data:
                             continue
                         event = json.loads(data)
@@ -300,6 +305,12 @@ class AnthropicMessagesProvider(ModelProvider):
                 errorMessage=str(exc),
             )
             yield AssistantMessageEvent(type="error", error=error)
+            return
+
+        if abort_event is not None and abort_event.is_set():
+            message.stopReason = "aborted"
+            message.errorMessage = "Operation aborted"
+            yield AssistantMessageEvent(type="error", reason="aborted", error=message)
             return
 
         message.stopReason = stop_reason

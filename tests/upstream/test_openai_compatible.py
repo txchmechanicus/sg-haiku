@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -41,12 +42,17 @@ def provider_with_response(
     )
 
 
-async def collect(provider: OpenAICompatibleProvider, tools: list[ToolSpec] | None = None):
+async def collect(
+    provider: OpenAICompatibleProvider,
+    tools: list[ToolSpec] | None = None,
+    **kwargs,
+):
     return [
         event
         async for event in provider.stream(
             [UserMessage(content="hello", timestamp=123)],
             tools or [],
+            **kwargs,
         )
     ]
 
@@ -183,6 +189,24 @@ async def test_openai_compatible_encodes_http_errors_as_error_event() -> None:
     assert events[-1].error is not None
     assert events[-1].error.stopReason == "error"
     assert "500" in (events[-1].error.errorMessage or "")
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_abort_event_set_before_stream_yields_aborted() -> None:
+    provider = provider_with_response(
+        sse(
+            {"choices": [{"delta": {"content": "hi"}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        )
+    )
+    abort_event = asyncio.Event()
+    abort_event.set()
+
+    events = await collect(provider, abort_event=abort_event)
+
+    assert events[-1].type == "error"
+    assert events[-1].error is not None
+    assert events[-1].error.stopReason == "aborted"
 
 
 @pytest.mark.asyncio

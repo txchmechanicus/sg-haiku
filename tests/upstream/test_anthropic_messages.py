@@ -244,6 +244,26 @@ async def test_error_event_yields_error() -> None:
     assert events[-1].error.stopReason == "error"
 
 
+@pytest.mark.asyncio
+async def test_abort_event_set_before_stream_yields_aborted() -> None:
+    provider = provider_with_response(
+        sse(
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hi"}},
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {}},
+            {"type": "message_stop"},
+        )
+    )
+    abort_event = asyncio.Event()
+    abort_event.set()
+
+    events = await collect(provider, abort_event=abort_event)
+
+    assert events[-1].type == "error"
+    assert events[-1].error is not None
+    assert events[-1].error.stopReason == "aborted"
+
+
 def test_convert_messages_batches_consecutive_tool_results() -> None:
     from upstream.providers.anthropic_messages import _convert_messages
 
