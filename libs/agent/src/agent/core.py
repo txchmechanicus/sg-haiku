@@ -181,7 +181,10 @@ class Agent:
             on_update=updates.append,
             ext_context=self.provide_tool_context() if self.provide_tool_context else None,
         )
-        result, is_error = await self.tools.run(call, ctx)
+        try:
+            result, is_error = await self.tools.run(call, ctx)
+        except Exception as exc:  # noqa: BLE001 - converted into a tool-visible error.
+            result, is_error = AgentToolResult.text(str(exc)), True
 
         if self.after_tool_call is not None:
             patch = await self.after_tool_call(call, result, is_error)
@@ -250,107 +253,128 @@ class Agent:
         yield AgentEvent.message_start(user_message)
         yield AgentEvent.message_end(user_message)
 
-        for _ in range(self.max_tool_iterations + 1):
-            yield AgentEvent.turn_start()
-            assistant_message: AssistantMessage | None = None
-            request_payload = ProviderRequestPayload(
-                messages=messages,
-                specs=specs,
-                system_prompt=effective_system_prompt,
-            )
-            if self.before_provider_request is not None:
-                request_payload = await self.before_provider_request(request_payload)
-            stream_started_at = time.monotonic()
-            async for assistant_event in self.provider.stream(
-                request_payload.messages,
-                request_payload.specs,
-                system_prompt=request_payload.system_prompt,
-            ):
-                current_message = (
-                    assistant_event.partial or assistant_event.message or assistant_event.error
+        try:
+            for _ in range(self.max_tool_iterations + 1):
+                yield AgentEvent.turn_start()
+                assistant_message: AssistantMessage | None = None
+                request_payload = ProviderRequestPayload(
+                    messages=messages,
+                    specs=specs,
+                    system_prompt=effective_system_prompt,
                 )
-                if current_message is not None:
-                    assistant_message = current_message
-                    if assistant_event.type == "start":
-                        yield AgentEvent.message_start(current_message)
-                    yield AgentEvent.message_update(current_message, assistant_event)
-
-            if self.after_provider_response is not None:
-                duration_ms = (time.monotonic() - stream_started_at) * 1000
-                await self.after_provider_response(AfterProviderResponseInfo(duration_ms=duration_ms))
-
-            if assistant_message is None:
-                assistant_message = AssistantMessage(
-                    content=[TextContent(text="Provider produced no assistant message.")],
-                    stopReason="error",
-                    errorMessage="Provider produced no assistant message.",
-                )
-
-            messages.append(assistant_message)
-            yield AgentEvent.message_end(assistant_message)
-
-            tool_calls = [
-                part for part in assistant_message.content if isinstance(part, ToolCall)
-            ]
-            if not tool_calls:
-                yield AgentEvent.turn_end(assistant_message, [])
-                yield AgentEvent.agent_end(messages)
-                return
-
-            if not use_tools:
-                error_message = ToolResultMessage(
-                    toolCallId=tool_calls[0].id,
-                    toolName=tool_calls[0].name,
-                    content=[TextContent(text="Model requested tools, but tools are disabled.")],
-                    isError=True,
-                )
-                messages.append(error_message)
-                yield AgentEvent.message_start(error_message)
-                yield AgentEvent.message_end(error_message)
-                yield AgentEvent.turn_end(assistant_message, [error_message])
-                yield AgentEvent.agent_end(messages)
-                return
-
-            for call in tool_calls:
-                yield AgentEvent.tool_execution_start(call.id, call.name, call.arguments)
-
-            executed = await self._execute_tool_calls(tool_calls)
-
-            tool_results: list[ToolResultMessage] = []
-            for call, result, is_error, updates in executed:
-                for update in updates:
-                    yield AgentEvent.tool_execution_update(
-                        call.id, call.name, call.arguments, update
+                if self.before_provider_request is not None:
+                    request_payload = await self.before_provider_request(request_payload)
+                stream_started_at = time.monotonic()
+                async for assistant_event in self.provider.stream(
+                    request_payload.messages,
+                    request_payload.specs,
+                    system_prompt=request_payload.system_prompt,
+                ):
+                    current_message = (
+                        assistant_event.partial or assistant_event.message or assistant_event.error
                     )
-                yield AgentEvent.tool_execution_end(
-                    call.id,
-                    call.name,
-                    call.arguments,
-                    result.model_dump(mode="json", exclude_none=True),
-                    is_error,
-                )
-                result_message = ToolResultMessage(
-                    toolCallId=call.id,
-                    toolName=call.name,
-                    content=result.content,
-                    details=result.details,
-                    isError=is_error,
-                )
-                messages.append(result_message)
-                tool_results.append(result_message)
-                yield AgentEvent.message_start(result_message)
-                yield AgentEvent.message_end(result_message)
+                    if current_message is not None:
+                        assistant_message = current_message
+                        if assistant_event.type == "start":
+                            yield AgentEvent.message_start(current_message)
+                        yield AgentEvent.message_update(current_message, assistant_event)
 
-            yield AgentEvent.turn_end(assistant_message, tool_results)
+                if self.after_provider_response is not None:
+                    duration_ms = (time.monotonic() - stream_started_at) * 1000
+                    await self.after_provider_response(
+                        AfterProviderResponseInfo(duration_ms=duration_ms)
+                    )
 
-        error_message = AssistantMessage(
-            content=[
-                TextContent(text=f"Stopped after {self.max_tool_iterations} tool iterations.")
-            ],
-            stopReason="error",
-            errorMessage=f"Stopped after {self.max_tool_iterations} tool iterations.",
-        )
-        messages.append(error_message)
-        yield AgentEvent.message_start(error_message)
-        yield AgentEvent.message_end(error_message)
-        yield AgentEvent.agent_end(messages)
+                if assistant_message is None:
+                    assistant_message = AssistantMessage(
+                        content=[TextContent(text="Provider produced no assistant message.")],
+                        stopReason="error",
+                        errorMessage="Provider produced no assistant message.",
+                    )
+
+                messages.append(assistant_message)
+                yield AgentEvent.message_end(assistant_message)
+
+                if assistant_message.stopReason in ("error", "aborted"):
+                    yield AgentEvent.turn_end(assistant_message, [])
+                    yield AgentEvent.agent_end(messages)
+                    return
+
+                tool_calls = [
+                    part for part in assistant_message.content if isinstance(part, ToolCall)
+                ]
+                if not tool_calls:
+                    yield AgentEvent.turn_end(assistant_message, [])
+                    yield AgentEvent.agent_end(messages)
+                    return
+
+                if not use_tools:
+                    error_message = ToolResultMessage(
+                        toolCallId=tool_calls[0].id,
+                        toolName=tool_calls[0].name,
+                        content=[
+                            TextContent(text="Model requested tools, but tools are disabled.")
+                        ],
+                        isError=True,
+                    )
+                    messages.append(error_message)
+                    yield AgentEvent.message_start(error_message)
+                    yield AgentEvent.message_end(error_message)
+                    yield AgentEvent.turn_end(assistant_message, [error_message])
+                    yield AgentEvent.agent_end(messages)
+                    return
+
+                for call in tool_calls:
+                    yield AgentEvent.tool_execution_start(call.id, call.name, call.arguments)
+
+                executed = await self._execute_tool_calls(tool_calls)
+
+                tool_results: list[ToolResultMessage] = []
+                for call, result, is_error, updates in executed:
+                    for update in updates:
+                        yield AgentEvent.tool_execution_update(
+                            call.id, call.name, call.arguments, update
+                        )
+                    yield AgentEvent.tool_execution_end(
+                        call.id,
+                        call.name,
+                        call.arguments,
+                        result.model_dump(mode="json", exclude_none=True),
+                        is_error,
+                    )
+                    result_message = ToolResultMessage(
+                        toolCallId=call.id,
+                        toolName=call.name,
+                        content=result.content,
+                        details=result.details,
+                        isError=is_error,
+                    )
+                    messages.append(result_message)
+                    tool_results.append(result_message)
+                    yield AgentEvent.message_start(result_message)
+                    yield AgentEvent.message_end(result_message)
+
+                yield AgentEvent.turn_end(assistant_message, tool_results)
+
+            error_message = AssistantMessage(
+                content=[
+                    TextContent(text=f"Stopped after {self.max_tool_iterations} tool iterations.")
+                ],
+                stopReason="error",
+                errorMessage=f"Stopped after {self.max_tool_iterations} tool iterations.",
+            )
+            messages.append(error_message)
+            yield AgentEvent.message_start(error_message)
+            yield AgentEvent.message_end(error_message)
+            yield AgentEvent.agent_end(messages)
+        except Exception as exc:  # noqa: BLE001 - guarantees a terminal agent_end.
+            fallback_message = AssistantMessage(
+                content=[TextContent(text=str(exc))],
+                stopReason="error",
+                errorMessage=str(exc),
+            )
+            messages.append(fallback_message)
+            yield AgentEvent.message_start(fallback_message)
+            yield AgentEvent.message_end(fallback_message)
+            yield AgentEvent.turn_end(fallback_message, [])
+            yield AgentEvent.agent_end(messages)

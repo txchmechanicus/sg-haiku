@@ -481,3 +481,123 @@ async def test_per_tool_execution_mode_override_breaks_up_parallel_group(
     await collect(agent, "go")
 
     assert tools.log == ["start:a", "end:a", "start:b", "end:b", "start:c", "end:c"]
+
+
+class SingleToolCallProvider(ModelProvider):
+    """Requests one tool call, then finishes on the next turn."""
+
+    async def stream(
+        self,
+        messages: list[Message],
+        tools: list[ToolSpec],
+        system_prompt: str | None = None,
+    ) -> AsyncIterator[AssistantMessageEvent]:
+        if messages[-1].role == "toolResult":
+            message = AssistantMessage(content=[TextContent(text="done")], stopReason="stop")
+            yield AssistantMessageEvent(type="start", partial=message)
+            yield AssistantMessageEvent(type="done", reason="stop", message=message)
+            return
+        call = ToolCall(id="1", name="a", arguments={})
+        message = AssistantMessage(content=[call], stopReason="toolUse")
+        yield AssistantMessageEvent(type="start", partial=message)
+        yield AssistantMessageEvent(type="done", reason="toolUse", message=message)
+
+
+class RaisingToolExecutor:
+    def specs(self) -> list[ToolSpec]:
+        return [ToolSpec(name="a", description="", parameters={})]
+
+    async def run(self, call: ToolCall, ctx) -> tuple[AgentToolResult, bool]:  # noqa: ANN001
+        raise RuntimeError("tool exploded")
+
+    def execution_mode_for(self, name: str) -> str | None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_tool_executor_exception_becomes_tool_error_and_run_continues(
+    tmp_path: Path,
+) -> None:
+    agent = Agent(provider=SingleToolCallProvider(), tools=RaisingToolExecutor(), cwd=tmp_path)
+
+    events = await collect(agent, "go")
+
+    tool_results = [
+        event.message
+        for event in events
+        if event.type == "message_end" and getattr(event.message, "role", None) == "toolResult"
+    ]
+    assert tool_results[0].isError is True
+    assert "tool exploded" in tool_results[0].content[0].text
+    assert events[-1].type == "agent_end"
+    assistant_messages = [
+        event.message
+        for event in events
+        if event.type == "message_end" and getattr(event.message, "role", None) == "assistant"
+    ]
+    assert assistant_messages[-1].content[0].text == "done"
+
+
+@pytest.mark.asyncio
+async def test_after_tool_call_hook_exception_is_caught_by_outer_net(tmp_path: Path) -> None:
+    (tmp_path / "example.txt").write_text("content", encoding="utf-8")
+
+    async def after_tool_call(
+        call: ToolCall, result: AgentToolResult, is_error: bool
+    ) -> ToolResultHookResult | None:
+        raise RuntimeError("hook exploded")
+
+    agent = Agent(
+        provider=MockProvider(),
+        tools=default_registry(tmp_path),
+        cwd=tmp_path,
+        after_tool_call=after_tool_call,
+    )
+
+    events = await collect(agent, "list files")
+
+    assert events[-1].type == "agent_end"
+    assistant_messages = [
+        event.message
+        for event in events
+        if event.type == "message_end" and getattr(event.message, "role", None) == "assistant"
+    ]
+    assert assistant_messages[-1].stopReason == "error"
+    assert "hook exploded" in assistant_messages[-1].errorMessage
+
+
+class ErrorWithToolCallProvider(ModelProvider):
+    """Reports a terminal error but (incorrectly/defensively) still includes a tool call."""
+
+    async def stream(
+        self,
+        messages: list[Message],
+        tools: list[ToolSpec],
+        system_prompt: str | None = None,
+    ) -> AsyncIterator[AssistantMessageEvent]:
+        call = ToolCall(id="1", name="a", arguments={})
+        message = AssistantMessage(
+            content=[call],
+            stopReason="error",
+            errorMessage="provider failed",
+        )
+        yield AssistantMessageEvent(type="start", partial=message)
+        yield AssistantMessageEvent(type="error", reason="error", error=message)
+
+
+@pytest.mark.asyncio
+async def test_provider_error_stop_reason_skips_tool_dispatch(tmp_path: Path) -> None:
+    agent = Agent(
+        provider=ErrorWithToolCallProvider(), tools=default_registry(tmp_path), cwd=tmp_path
+    )
+
+    events = await collect(agent, "go")
+
+    assert "tool_execution_start" not in [event.type for event in events]
+    assert events[-1].type == "agent_end"
+    assistant_messages = [
+        event.message
+        for event in events
+        if event.type == "message_end" and getattr(event.message, "role", None) == "assistant"
+    ]
+    assert assistant_messages[-1].stopReason == "error"
