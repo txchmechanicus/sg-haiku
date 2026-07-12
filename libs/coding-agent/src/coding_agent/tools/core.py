@@ -102,7 +102,8 @@ class ToolRegistry:
             try:
                 arguments = tool.prepare_arguments(arguments)
             except Exception as exc:  # noqa: BLE001 - tool failures are model-visible results.
-                return AgentToolResult.text(f"Tool {call.name} argument preparation failed: {exc}"), True
+                message = f"Tool {call.name} argument preparation failed: {exc}"
+                return AgentToolResult.text(message), True
         try:
             return await tool.handler(arguments, ctx or _NOOP_CONTEXT)
         except Exception as exc:  # noqa: BLE001 - tool failures are model-visible results.

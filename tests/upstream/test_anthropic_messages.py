@@ -269,7 +269,11 @@ async def test_abort_event_set_before_stream_yields_aborted() -> None:
     provider = provider_with_response(
         sse(
             {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
-            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hi"}},
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "hi"},
+            },
             {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {}},
             {"type": "message_stop"},
         )

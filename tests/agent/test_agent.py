@@ -23,8 +23,8 @@ from upstream import (
     ToolSpec,
     UserMessage,
 )
-from upstream.types import AgentToolResult
 from upstream.models import TextContent
+from upstream.types import AgentToolResult
 
 
 async def collect(agent: Agent, prompt: str, *, use_tools: bool = True):

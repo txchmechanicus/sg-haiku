@@ -48,6 +48,9 @@ class _ScriptedProvider(ModelProvider):
         messages: list[Message],
         tools: list[ToolSpec],
         system_prompt: str | None = None,
+        *,
+        reasoning: object | None = None,
+        abort_event: object | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         self.seen_initial_messages.append(list(messages))
         for event in next(self._turns):
@@ -58,16 +61,22 @@ class _NoTools:
     def specs(self) -> list[ToolSpec]:
         return []
 
-    async def run(self, call):  # pragma: no cover - not expected to run
+    async def run(self, call, ctx):  # pragma: no cover - not expected to run
         raise AssertionError("no tool should run")
+
+    def execution_mode_for(self, name: str) -> str | None:
+        return None
 
 
 class _EchoTool:
     def specs(self) -> list[ToolSpec]:
         return [ToolSpec(name="echo", description="Echo.", parameters={"type": "object"})]
 
-    async def run(self, call):
+    async def run(self, call, ctx):
         return AgentToolResult.text("echoed"), False
+
+    def execution_mode_for(self, name: str) -> str | None:
+        return None
 
 
 async def _run_scripted(
