@@ -19,12 +19,18 @@ from agent.sessions import (
     latest_session,
     resolve_session_reference,
 )
-from upstream.models import AssistantMessage, SystemMessage, TextContent
+from upstream.models import AssistantMessage
 from upstream.registry import ModelRegistry
 
 from coding_agent.cli import interactive
 from coding_agent.cli.console import console, error_console
-from coding_agent.cli.helpers import build_extension_runner, build_tool_registry, parse_tool_list
+from coding_agent.cli.helpers import (
+    assistant_text,
+    build_compaction_summary_message,
+    build_extension_runner,
+    build_tool_registry,
+    parse_tool_list,
+)
 from coding_agent.config import ProviderConfig
 from coding_agent.extensions import (
     AfterProviderResponseEvent,
@@ -537,7 +543,7 @@ async def _run_agent(
                     print(json.dumps(compaction_record, ensure_ascii=False))
 
     initial_messages = [entry.message for entry in initial_entries]
-    summary_message = _build_compaction_summary_message(compaction_summary, compaction_details)
+    summary_message = build_compaction_summary_message(compaction_summary, compaction_details)
     if summary_message is not None:
         initial_messages = [summary_message, *initial_messages]
     if runner.has_handlers("context"):
@@ -567,7 +573,7 @@ async def _run_agent(
 
         if event.type == "message_end" and isinstance(event.message, AssistantMessage):
             if mode == "text":
-                text = _assistant_text(event.message)
+                text = assistant_text(event.message)
                 if text:
                     console.print(text, end="")
                 if text and not text.endswith("\n"):
@@ -664,31 +670,13 @@ def _print_models(models_config: list[Path] | None) -> None:
         )
 
 
-def _build_compaction_summary_message(
-    summary: str | None, details: dict[str, object] | None
-) -> SystemMessage | None:
-    if not summary:
-        return None
-    parts = [f"Compacted conversation summary:\n{summary}"]
-    if details:
-        read_files = details.get("readFiles") or []
-        modified_files = details.get("modifiedFiles") or []
-        if read_files or modified_files:
-            parts.append(
-                "Files touched before compaction:\n"
-                f"Read: {', '.join(read_files) or 'none'}\n"
-                f"Modified: {', '.join(modified_files) or 'none'}"
-            )
-    return SystemMessage(content="\n\n".join(parts))
-
-
 def _json_result(events: list[AgentEvent]) -> dict[str, object]:
     assistant_messages = [
         event.message
         for event in events
         if event.type == "message_end" and isinstance(event.message, AssistantMessage)
     ]
-    answer = "".join(_assistant_text(message) for message in assistant_messages)
+    answer = "".join(assistant_text(message) for message in assistant_messages)
     return {
         "answer": answer,
         "tool_calls": [
@@ -713,5 +701,3 @@ def _json_result(events: list[AgentEvent]) -> dict[str, object]:
     }
 
 
-def _assistant_text(message: AssistantMessage) -> str:
-    return "".join(part.text for part in message.content if isinstance(part, TextContent))

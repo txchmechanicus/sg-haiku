@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+from upstream.models import AssistantMessage, SystemMessage, TextContent
+
 from coding_agent.cli.console import error_console
 from coding_agent.extensions import ExtensionRunner, discover_and_load_extensions
 from coding_agent.extensions.types import SessionManagerProtocol
@@ -53,3 +55,25 @@ def parse_tool_list(value: str | None) -> set[str] | None:
     if value is None:
         return None
     return {part.strip() for part in value.split(",") if part.strip()}
+
+
+def assistant_text(message: AssistantMessage) -> str:
+    return "".join(part.text for part in message.content if isinstance(part, TextContent))
+
+
+def build_compaction_summary_message(
+    summary: str | None, details: dict[str, object] | None
+) -> SystemMessage | None:
+    if not summary:
+        return None
+    parts = [f"Compacted conversation summary:\n{summary}"]
+    if details:
+        read_files = details.get("readFiles") or []
+        modified_files = details.get("modifiedFiles") or []
+        if read_files or modified_files:
+            parts.append(
+                "Files touched before compaction:\n"
+                f"Read: {', '.join(read_files) or 'none'}\n"
+                f"Modified: {', '.join(modified_files) or 'none'}"
+            )
+    return SystemMessage(content="\n\n".join(parts))
