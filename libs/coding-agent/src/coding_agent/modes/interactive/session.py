@@ -4,12 +4,22 @@ import asyncio
 from collections.abc import Awaitable, Callable
 
 from agent import Agent
+from agent.entries import EntryRef
 from agent.events import AgentEvent
+from agent.sessions import SessionManager
 from tui import TUI, Container, ProcessTerminal, Terminal, Text
-from upstream.models import Message
+from upstream.models import (
+    AssistantMessage,
+    Message,
+    SystemMessage,
+    TextContent,
+    ToolResultMessage,
+    UserMessage,
+)
 from upstream.providers import ModelProvider
 from upstream.registry import ModelInfo
 
+from coding_agent.cli.helpers import assistant_text
 from coding_agent.modes.interactive import commands
 from coding_agent.modes.interactive.components import (
     AssistantMessageComponent,
@@ -36,16 +46,29 @@ class InteractiveSession:
         models: list[ModelInfo] | None = None,
         on_model_change: Callable[[str, str], Awaitable[ModelProvider]] | None = None,
         model_label: str | None = None,
+        session: SessionManager | None = None,
+        initial_entries: list[EntryRef] | None = None,
+        compaction_message: SystemMessage | None = None,
+        new_session_factory: Callable[[], SessionManager] | None = None,
     ) -> None:
         self.agent = agent
         self.use_tools = use_tools
         self.system_prompt = system_prompt
-        self.messages: list[Message] = []
         self.models = models
         self.on_model_change = on_model_change
         self.model_label = model_label or "mock"
+        self.session = session
+        self.new_session_factory = new_session_factory
 
         self.transcript = Container()
+        entries = initial_entries or []
+        self.messages: list[Message]
+        if compaction_message is not None:
+            self.messages = [compaction_message, *(ref.message for ref in entries)]
+        else:
+            self.messages = [ref.message for ref in entries]
+        self._replay_history(entries)
+
         self.footer = Footer(on_submit=self._on_submit, status=self._status_line())
         self.tui = TUI(terminal if terminal is not None else ProcessTerminal())
         self.tui.add(self.transcript)
@@ -61,6 +84,36 @@ class InteractiveSession:
 
     def _status_line(self) -> str:
         return f"model: {self.model_label} · Ctrl-C cancel · Ctrl-D exit · /help for commands"
+
+    def _replay_history(self, entries: list[EntryRef]) -> None:
+        """Populates the transcript with a resumed/forked session's prior turns before any
+        new input is fed, so `self.messages` (used as `initial_messages` for the next
+        `agent.run()` call) and the on-screen transcript agree from the start."""
+        pending_tool_components: dict[str, ToolExecutionComponent] = {}
+        for ref in entries:
+            message = ref.message
+            if isinstance(message, UserMessage):
+                text = (
+                    message.content
+                    if isinstance(message.content, str)
+                    else "".join(
+                        part.text for part in message.content if isinstance(part, TextContent)
+                    )
+                )
+                self.transcript.add(Text(f"> {text}", style="bold cyan"))
+            elif isinstance(message, AssistantMessage):
+                text_component = AssistantMessageComponent()
+                text_component.text = assistant_text(message)
+                self.transcript.add(text_component)
+                for part in message.content:
+                    if getattr(part, "type", None) == "toolCall":
+                        component = ToolExecutionComponent(part.name, part.arguments)
+                        pending_tool_components[part.id] = component
+                        self.transcript.add(component)
+            elif isinstance(message, ToolResultMessage):
+                component = pending_tool_components.pop(message.toolCallId, None)
+                if component is not None:
+                    component.finish(is_error=message.isError)
 
     def _on_submit(self, text: str) -> None:
         text = text.strip()
@@ -119,6 +172,10 @@ class InteractiveSession:
     def _handle_event(
         self, event: AgentEvent, assistant_component: AssistantMessageComponent
     ) -> None:
+        if self.session is not None:
+            self.session.record_event(event)
+            if event.type == "message_end" and event.message is not None:
+                self.session.record_message(event.message)
         if event.type == "message_update":
             assistant_event = event.assistantMessageEvent
             is_text_delta = assistant_event is not None and assistant_event.type == "text_delta"
@@ -153,6 +210,8 @@ class InteractiveSession:
             self.model_label = label
             self.footer.set_status(self._status_line())
             self.transcript.add(Text(f"Switched to {label}.", style="green"))
+            if self.session is not None:
+                self.session.record_model_change(provider=provider_id, model_id=model_id)
         self.tui.request_render(force=True)
 
 
@@ -164,13 +223,21 @@ async def run_interactive(
     models: list[ModelInfo] | None = None,
     on_model_change: Callable[[str, str], Awaitable[ModelProvider]] | None = None,
     model_label: str | None = None,
+    session: SessionManager | None = None,
+    initial_entries: list[EntryRef] | None = None,
+    compaction_message: SystemMessage | None = None,
+    new_session_factory: Callable[[], SessionManager] | None = None,
 ) -> None:
-    session = InteractiveSession(
+    interactive_session = InteractiveSession(
         agent,
         use_tools=use_tools,
         system_prompt=system_prompt,
         models=models,
         on_model_change=on_model_change,
         model_label=model_label,
+        session=session,
+        initial_entries=initial_entries,
+        compaction_message=compaction_message,
+        new_session_factory=new_session_factory,
     )
-    await session.run()
+    await interactive_session.run()

@@ -30,6 +30,13 @@ async def _cmd_quit(session: InteractiveSession, _args: str) -> None:
 
 
 async def _cmd_clear(session: InteractiveSession, _args: str) -> None:
+    # Matches upstream Pi's `/clear` (aliased `/new`): starts a brand-new session file
+    # rather than just wiping in-memory history, so the abandoned conversation stays
+    # reachable via --resume/--continue against its own session id.
+    if session.new_session_factory is not None:
+        session.session = session.new_session_factory()
+        provider_id, _, model_id = session.model_label.partition("/")
+        session.session.record_model_change(provider=provider_id, model_id=model_id)
     session.transcript.clear()
     session.messages = []
     session.tui.request_render(force=True)

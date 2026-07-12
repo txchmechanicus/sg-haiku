@@ -250,6 +250,24 @@ def main(
                 models_config_paths=models_config,
                 auth_file=auth_file,
             )
+            initial_entries, session_manager, compaction_summary, compaction_details = (
+                _build_session_manager(
+                    session_path=session,
+                    session_dir=session_dir,
+                    session_id=session_id,
+                    session_name=name,
+                    write_session=not no_session,
+                    continue_session=continue_session,
+                    resume=resume,
+                    fork=fork,
+                )
+            )
+            if fork is not None:
+                session_reason = "fork"
+            elif continue_session or resume:
+                session_reason = "resume"
+            else:
+                session_reason = "new"
             asyncio.run(
                 interactive.run(
                     config,
@@ -258,6 +276,13 @@ def main(
                     no_builtin_tools=no_builtin_tools,
                     tools=parse_tool_list(tools),
                     exclude_tools=parse_tool_list(exclude_tools),
+                    initial_entries=initial_entries,
+                    session=session_manager,
+                    session_reason=session_reason,
+                    compaction_summary=compaction_summary,
+                    compaction_details=compaction_details,
+                    session_dir=session_dir,
+                    write_session=not no_session,
                 )
             )
         except ValueError as exc:

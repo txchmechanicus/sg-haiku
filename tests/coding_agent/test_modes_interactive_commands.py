@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 from agent import Agent
+from agent.sessions import SessionManager
 from coding_agent.modes.interactive import InteractiveSession
 from tui import Text
 from upstream.models import AssistantMessageEvent, Message
@@ -12,6 +15,10 @@ from upstream.registry import ModelInfo
 from upstream.types import ToolSpec
 
 from tests.tui.fake_terminal import FakeTerminal
+
+
+def _read_jsonl(path: Path) -> list[dict[str, object]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
 class _NoStreamProvider(ModelProvider):
@@ -165,3 +172,70 @@ async def test_model_select_cancel_leaves_provider_untouched() -> None:
     await asyncio.wait_for(run_task, timeout=2)
 
     assert session.agent.provider is original_provider
+
+
+async def test_model_select_records_model_change_when_session_attached(tmp_path: Path) -> None:
+    new_provider = _NoStreamProvider()
+
+    async def on_model_change(provider_id: str, model_id: str) -> ModelProvider:
+        return new_provider
+
+    path = tmp_path / "session.jsonl"
+    manager = SessionManager.create(explicit_path=path, session_id="session-1", cwd=tmp_path)
+    agent = Agent(provider=_NoStreamProvider(), tools=_NoTools())
+    terminal = FakeTerminal()
+    session = InteractiveSession(
+        agent,
+        terminal=terminal,
+        models=_models(),
+        on_model_change=on_model_change,
+        model_label="p1/a",
+        session=manager,
+    )
+    run_task = asyncio.ensure_future(session.run())
+
+    await _feed_line(terminal, "/model")
+    await _feed_raw(terminal, b"\x1b[B")
+    await _feed_raw(terminal, b"\r")
+    await asyncio.sleep(0.05)
+    await _feed_raw(terminal, b"\x04")
+    await asyncio.wait_for(run_task, timeout=2)
+
+    records = _read_jsonl(path)
+    model_changes = [r for r in records if r["type"] == "model_change"]
+    assert model_changes[-1]["provider"] == "p1"
+    assert model_changes[-1]["modelId"] == "b"
+
+
+async def test_clear_starts_a_new_session_file(tmp_path: Path) -> None:
+    first_path = tmp_path / "first.jsonl"
+    second_path = tmp_path / "second.jsonl"
+    paths = iter([second_path])
+    first_manager = SessionManager.create(explicit_path=first_path, session_id="s1", cwd=tmp_path)
+
+    def new_session_factory() -> SessionManager:
+        return SessionManager.create(
+            explicit_path=next(paths), session_id="s2", cwd=tmp_path
+        )
+
+    agent = Agent(provider=_NoStreamProvider(), tools=_NoTools())
+    terminal = FakeTerminal()
+    session = InteractiveSession(
+        agent,
+        terminal=terminal,
+        session=first_manager,
+        new_session_factory=new_session_factory,
+        model_label="p1/a",
+    )
+    session.messages = ["placeholder"]  # type: ignore[list-item]
+    session.transcript.add(Text("placeholder"))
+    run_task = asyncio.ensure_future(session.run())
+
+    await _feed_line(terminal, "/clear")
+    await _feed_raw(terminal, b"\x04")
+    await asyncio.wait_for(run_task, timeout=2)
+
+    assert session.session is not first_manager
+    assert session.messages == []
+    assert session.transcript.children == []
+    assert second_path.exists()
