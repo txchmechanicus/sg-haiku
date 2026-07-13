@@ -3,24 +3,43 @@ from __future__ import annotations
 from coding_agent.modes.interactive.components import ToolExecutionComponent
 
 
-def test_tool_execution_render_never_exceeds_width() -> None:
-    component = ToolExecutionComponent("write_file", {"path": "x" * 200, "content": "y" * 200})
-    lines = component.render(40)
-    assert len(lines) == 1
-    assert len(lines[0]) <= 40
-
-
-def test_tool_execution_render_short_line_is_untouched() -> None:
+def test_tool_execution_shows_pending_call() -> None:
     component = ToolExecutionComponent("echo", {"x": 1})
-    lines = component.render(80)
-    assert lines == ["tool: echo({'x': 1})"]
+    assert str(component.render()) == "⏺ echo(x=1)"
 
 
-def test_tool_execution_finish_appends_status() -> None:
-    ok_component = ToolExecutionComponent("echo", {})
-    ok_component.finish(is_error=False)
-    assert ok_component.render(80)[0].endswith("-> ok")
+def test_tool_execution_quotes_string_args() -> None:
+    component = ToolExecutionComponent("ls", {"path": "."})
+    assert str(component.render()) == '⏺ ls(path=".")'
 
-    error_component = ToolExecutionComponent("echo", {})
-    error_component.finish(is_error=True)
-    assert error_component.render(80)[0].endswith("-> error")
+
+def test_tool_execution_finish_ok_has_no_failure_note() -> None:
+    component = ToolExecutionComponent("echo", {})
+    component.finish(is_error=False)
+    assert str(component.render()) == "⏺ echo()"
+    assert component.has_class("ok")
+
+
+def test_tool_execution_finish_error_appends_failure_note() -> None:
+    component = ToolExecutionComponent("echo", {})
+    component.finish(is_error=True)
+    assert str(component.render()).endswith("— failed")
+    assert component.has_class("error")
+
+
+def test_tool_execution_shows_result_preview() -> None:
+    component = ToolExecutionComponent("ls", {"path": "."})
+    component.finish(is_error=False, result={"content": [{"type": "text", "text": "a.py\nb.py"}]})
+
+    assert str(component.render()) == '⏺ ls(path=".")\n  ⎿  a.py\n     b.py'
+
+
+def test_tool_execution_truncates_long_result_preview() -> None:
+    component = ToolExecutionComponent("read", {"path": "big.txt"})
+    lines = [f"line {i}" for i in range(10)]
+    result = {"content": [{"type": "text", "text": "\n".join(lines)}]}
+    component.finish(is_error=False, result=result)
+
+    rendered = str(component.render())
+    assert rendered.count("\n") == 4  # bullet line + 3 kept preview lines + an ellipsis line
+    assert rendered.endswith("…")
