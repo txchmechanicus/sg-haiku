@@ -346,6 +346,43 @@ async def test_bash_timeout(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_bash_stops_promptly_when_aborted(tmp_path: Path) -> None:
+    import asyncio
+    import time
+
+    from agent.core import ToolCallContext
+
+    registry = default_registry(tmp_path)
+    abort_event = asyncio.Event()
+
+    async def abort_soon() -> None:
+        await asyncio.sleep(0.3)
+        abort_event.set()
+
+    asyncio.ensure_future(abort_soon())
+    ctx = ToolCallContext(on_update=lambda _update: None, abort_event=abort_event)
+
+    start = time.monotonic()
+    result, is_error = await registry.run(
+        ToolCall(id="1", name="bash", arguments={"command": "sleep 30", "timeout": 30}),
+        ctx,
+    )
+    elapsed = time.monotonic() - start
+
+    assert is_error is True
+    assert result.content[0].text == "Operation aborted"
+    assert elapsed < 2  # nowhere near the 30s timeout/sleep duration
+
+    # The subprocess must actually be killed, not just abandoned.
+    await asyncio.sleep(0.3)
+    proc = await asyncio.create_subprocess_exec(
+        "pgrep", "-f", "sleep 30", stdout=asyncio.subprocess.PIPE
+    )
+    out, _ = await proc.communicate()
+    assert out.decode().strip() == ""
+
+
+@pytest.mark.asyncio
 async def test_write_creates_parent_directories_and_file(tmp_path: Path) -> None:
     registry = default_registry(tmp_path)
 

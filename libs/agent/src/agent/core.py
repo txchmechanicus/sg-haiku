@@ -100,10 +100,19 @@ class ToolCallContext:
     itself has no opinion on its type (set via `Agent(provide_tool_context=...)`) —
     `coding_agent` supplies its `ExtensionContext` here so custom tools registered by
     extensions (and built-in tools) can read `cwd`/`session_manager`/etc.
+
+    `abort_event` is the same `asyncio.Event` `Agent.abort()` sets and every `ModelProvider`
+    already polls between stream chunks — a long-running tool (e.g. a shell command) can
+    check `aborted()` periodically and stop early instead of running to completion after the
+    user has already cancelled the turn.
     """
 
     on_update: Callable[[Any], None]
     ext_context: object | None = None
+    abort_event: asyncio.Event | None = None
+
+    def aborted(self) -> bool:
+        return self.abort_event is not None and self.abort_event.is_set()
 
 
 class ToolExecutor(Protocol):
@@ -216,6 +225,7 @@ class Agent:
         ctx = ToolCallContext(
             on_update=updates.append,
             ext_context=self.provide_tool_context() if self.provide_tool_context else None,
+            abort_event=self._abort_event,
         )
         try:
             result, is_error = await self.tools.run(call, ctx)

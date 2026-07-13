@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -107,6 +108,15 @@ async def _submit(pilot: Pilot, text: str) -> None:
     if text:
         await pilot.press(*text)
     await pilot.press("enter")
+    await pilot.pause()
+    app = pilot.app
+    # Submission now runs as a detached task (see session.py's on_input_submitted) so
+    # that Ctrl-C can interrupt it -- wait for it to actually finish before returning,
+    # since the scripted providers used here resolve almost instantly.
+    for _ in range(200):
+        if app._submission_task is None or app._submission_task.done():
+            break
+        await asyncio.sleep(0.01)
     await pilot.pause()
 
 
@@ -329,3 +339,115 @@ async def test_passive_updates_do_not_override_a_manual_scroll() -> None:
         # bottom, matching normal chat-app "sticky scroll" behavior.
         await _submit(pilot, "back to bottom")
         assert transcript.scroll_y == transcript.max_scroll_y
+
+
+class _AbortAwareProvider(ModelProvider):
+    """Actually checks `abort_event`, like every real provider does -- simulates the
+    cooperative-cancellation path (Ctrl-C should stop this promptly on its own, no
+    watchdog hard-cancel required)."""
+
+    def __init__(self) -> None:
+        self.saw_abort = False
+
+    async def stream(
+        self,
+        messages: list[Message],
+        tools: list[ToolSpec],
+        system_prompt: str | None = None,
+        *,
+        reasoning: object | None = None,
+        abort_event: asyncio.Event | None = None,
+    ) -> AsyncIterator[AssistantMessageEvent]:
+        message = AssistantMessage(content=[TextContent(text="")], stopReason="stop")
+        yield AssistantMessageEvent(type="start", partial=message)
+        assert abort_event is not None
+        for _ in range(200):
+            if abort_event.is_set():
+                self.saw_abort = True
+                final = AssistantMessage(content=[TextContent(text="")], stopReason="aborted")
+                yield AssistantMessageEvent(type="done", reason="aborted", message=final)
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("abort_event was never set")
+
+
+class _HangingProvider(ModelProvider):
+    """Never yields and never checks the abort event -- simulates a stalled connection
+    that only the watchdog's hard `task.cancel()` can stop."""
+
+    async def stream(
+        self,
+        messages: list[Message],
+        tools: list[ToolSpec],
+        system_prompt: str | None = None,
+        *,
+        reasoning: object | None = None,
+        abort_event: asyncio.Event | None = None,
+    ) -> AsyncIterator[AssistantMessageEvent]:
+        await asyncio.sleep(3600)
+        yield AssistantMessageEvent(type="done", reason="stop")  # pragma: no cover
+
+
+async def _wait_until(predicate, timeout: float = 3.0) -> None:
+    for _ in range(int(timeout / 0.01)):
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition was never met")
+
+
+async def test_ctrl_c_calls_agent_abort_and_lets_a_cooperative_provider_finish_cleanly() -> None:
+    provider = _AbortAwareProvider()
+    agent = Agent(provider=provider, tools=_NoTools())
+    app = HaikuApp(agent)
+    async with app.run_test() as pilot:
+        await pilot.press(*"hi")
+        await pilot.press("enter")
+        await _wait_until(lambda: app._turn_task is not None)
+
+        await pilot.press("ctrl+c")
+        await _wait_until(lambda: app._turn_task is None)
+
+        assert provider.saw_abort is True
+
+
+async def test_ctrl_c_hard_cancels_a_stuck_turn_after_grace_period() -> None:
+    provider = _HangingProvider()
+    agent = Agent(provider=provider, tools=_NoTools())
+    app = HaikuApp(agent)
+    async with app.run_test() as pilot:
+        await pilot.press(*"hi")
+        await pilot.press("enter")
+        await _wait_until(lambda: app._turn_task is not None)
+
+        await pilot.press("ctrl+c")
+
+        # The provider ignores the abort signal entirely, so the turn must still be
+        # running right after Ctrl-C -- only the watchdog's grace-period fallback will
+        # eventually stop it.
+        await asyncio.sleep(0.2)
+        assert app._turn_task is not None and not app._turn_task.done()
+
+        await _wait_until(lambda: app._turn_task is None, timeout=3.0)
+
+
+async def test_second_ctrl_c_force_cancels_immediately() -> None:
+    provider = _HangingProvider()
+    agent = Agent(provider=provider, tools=_NoTools())
+    app = HaikuApp(agent)
+    async with app.run_test() as pilot:
+        await pilot.press(*"hi")
+        await pilot.press("enter")
+        await _wait_until(lambda: app._turn_task is not None)
+
+        await pilot.press("ctrl+c")
+        await asyncio.sleep(0.2)
+        assert app._turn_task is not None and not app._turn_task.done()
+
+        # A second Ctrl-C force-cancels right away, well before the ~1.5s watchdog
+        # grace period would otherwise kick in.
+        started = asyncio.get_event_loop().time()
+        await pilot.press("ctrl+c")
+        await _wait_until(lambda: app._turn_task is None, timeout=1.0)
+        elapsed = asyncio.get_event_loop().time() - started
+        assert elapsed < 1.0

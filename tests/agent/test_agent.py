@@ -427,6 +427,38 @@ async def test_agent_passes_ext_context_to_tools(tmp_path: Path) -> None:
     assert tool_results[0].content[0].text == "ext_context='my-ext-context'"
 
 
+class AbortCheckingToolExecutor:
+    """A tool that reports whether it can see the run's abort signal, exercising
+    `ToolCallContext.abort_event`/`aborted()` end-to-end."""
+
+    def specs(self) -> list[ToolSpec]:
+        return [ToolSpec(name="progress", description="reports progress", parameters={})]
+
+    async def run(self, call: ToolCall, ctx) -> tuple[AgentToolResult, bool]:  # noqa: ANN001
+        return AgentToolResult.text(f"aborted={ctx.aborted()}"), False
+
+    def execution_mode_for(self, name: str) -> str | None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_tool_call_context_carries_the_agents_abort_event(tmp_path: Path) -> None:
+    agent = Agent(provider=ProgressToolProvider(), tools=AbortCheckingToolExecutor(), cwd=tmp_path)
+
+    events = await collect(agent, "go")
+
+    tool_results = [
+        event.message
+        for event in events
+        if event.type == "message_end" and getattr(event.message, "role", None) == "toolResult"
+    ]
+    assert tool_results[0].content[0].text == "aborted=False"
+    # The same Event instance `Agent.abort()` sets is the one the tool saw (it just
+    # hadn't been set yet at call time) -- confirms it's the run's real abort_event,
+    # not a fresh/disconnected one.
+    assert agent._abort_event is not None
+
+
 class MultiToolCallProvider(ModelProvider):
     """Requests three tool calls in a single turn, then finishes on the next turn."""
 

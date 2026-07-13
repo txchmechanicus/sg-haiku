@@ -198,24 +198,51 @@ def _read_tool(cwd: Path) -> Tool:
 def _bash_tool(cwd: Path) -> Tool:
     root = cwd.resolve()
 
-    async def handler(arguments: dict[str, Any], _ctx: ToolCallContext) -> AgentToolResult:
+    async def handler(arguments: dict[str, Any], ctx: ToolCallContext) -> AgentToolResult:
         command = str(arguments.get("command") or "")
         timeout = _positive_int(arguments.get("timeout"), DEFAULT_BASH_TIMEOUT_SECONDS, "timeout")
         if not command.strip():
             raise ValueError("command must be a non-empty string")
+
+        process = await asyncio.create_subprocess_shell(
+            command,
+            cwd=root,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=os.environ.copy(),
+        )
+        # Races the process against both the timeout and the turn's abort signal (if any)
+        # so a Ctrl-C during a long-running command actually kills the shell process
+        # instead of leaving it running in the background while its result is discarded.
+        communicate_task = asyncio.ensure_future(process.communicate())
+        waiters: list[asyncio.Future[Any]] = [communicate_task]
+        abort_wait_task: asyncio.Future[Any] | None = None
+        if ctx.abort_event is not None:
+            abort_wait_task = asyncio.ensure_future(ctx.abort_event.wait())
+            waiters.append(abort_wait_task)
+
         try:
-            process = await asyncio.create_subprocess_shell(
-                command,
-                cwd=root,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=os.environ.copy(),
+            done, _pending = await asyncio.wait(
+                waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
             )
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
-        except TimeoutError:
+        finally:
+            if abort_wait_task is not None and not abort_wait_task.done():
+                abort_wait_task.cancel()
+
+        if communicate_task in done:
+            stdout, stderr = communicate_task.result()
+        else:
+            communicate_task.cancel()
             with contextlib.suppress(ProcessLookupError):
-                process.kill()
-            raise TimeoutError(f"Command timed out after {timeout} seconds") from None
+                process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=2)
+            except TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+            if abort_wait_task is not None and abort_wait_task in done:
+                return AgentToolResult.text("Operation aborted"), True
+            raise TimeoutError(f"Command timed out after {timeout} seconds")
 
         output = (stdout + stderr).decode(errors="replace")
         output = output or "(no output)"

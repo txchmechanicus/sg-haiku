@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -71,6 +72,14 @@ async def _submit(pilot: Pilot, text: str) -> None:
     if text:
         await pilot.press(*text)
     await pilot.press("enter")
+    await pilot.pause()
+    app = pilot.app
+    # Submission now runs as a detached task (see session.py's on_input_submitted) so
+    # that Ctrl-C can interrupt it -- wait for it to actually finish before returning.
+    for _ in range(200):
+        if app._submission_task is None or app._submission_task.done():
+            break
+        await asyncio.sleep(0.01)
     await pilot.pause()
 
 

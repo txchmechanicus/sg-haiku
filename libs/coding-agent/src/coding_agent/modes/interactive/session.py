@@ -44,8 +44,7 @@ class HaikuApp(App[None]):
     """Owns the agent, conversation state, and the Textual widget tree for a single
     interactive-mode run. Mirrors the event-wiring slice of Pi's
     `interactive-mode.ts`: session persistence and slash commands (/help, /quit, /clear,
-    /model) are implemented; a single built-in dark theme is applied, no theme
-    switching/autocomplete are implemented.
+    /model, /theme) are implemented, including discoverable custom theme files.
     """
 
     CSS = """
@@ -117,6 +116,8 @@ class HaikuApp(App[None]):
         self._tool_components: dict[str, ToolExecutionComponent] = {}
         self._current_assistant: AssistantMessageComponent | None = None
         self._turn_task: asyncio.Task[None] | None = None
+        self._submission_task: asyncio.Task[None] | None = None
+        self._abort_requested = False
         self.quit_requested = False
         # "Sticky" auto-scroll: true while the user is following the bottom of the
         # transcript. Kept in sync with the *real* scroll position via `watch()` below —
@@ -225,7 +226,19 @@ class HaikuApp(App[None]):
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         event.input.value = ""
-        await self._handle_submitted_text(text)
+        # Deliberately not awaited: `on_input_submitted` runs on the App's own message
+        # pump, and a turn can run for a long time. Awaiting it here would block that
+        # pump from dispatching anything else -- including the Key event for Ctrl-C --
+        # until the turn already finished on its own, making cancellation a no-op.
+        self._submission_task = asyncio.ensure_future(self._handle_submitted_text(text))
+        self._submission_task.add_done_callback(self._on_submission_task_done)
+
+    def _on_submission_task_done(self, task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            self._handle_exception(error)
 
     async def _handle_submitted_text(self, text: str) -> None:
         if not text:
@@ -321,15 +334,34 @@ class HaikuApp(App[None]):
         if event.key == "ctrl+c":
             event.stop()
             if self._turn_task is not None and not self._turn_task.done():
-                self._turn_task.cancel()
+                if self._abort_requested:
+                    # A second Ctrl-C while the first is still unwinding: stop asking
+                    # nicely and kill the task outright (common "one for graceful, two
+                    # for force" CLI convention).
+                    self._turn_task.cancel()
+                else:
+                    self._abort_requested = True
+                    # Cooperative cancellation: every provider already polls this event
+                    # between stream chunks and the `bash` tool now checks it too, so
+                    # this alone stops an in-flight response/tool promptly in the common
+                    # case. The watchdog below is a safety net for anything that doesn't
+                    # observe the flag (e.g. a connection stalled before the first byte).
+                    self.agent.abort()
+                    asyncio.ensure_future(self._hard_cancel_if_stuck())
             return
         if event.key == "ctrl+d" and not self.prompt_bar.input.value:
             event.stop()
             self.quit_requested = True
             self.exit()
 
+    async def _hard_cancel_if_stuck(self, grace_seconds: float = 1.5) -> None:
+        await asyncio.sleep(grace_seconds)
+        if self._turn_task is not None and not self._turn_task.done():
+            self._turn_task.cancel()
+
     async def _run_turn(self, prompt: str) -> None:
         self._current_assistant = None
+        self._abort_requested = False
         async for event in self.agent.run(
             prompt,
             initial_messages=self.messages,
