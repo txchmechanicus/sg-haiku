@@ -4,48 +4,48 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from tui import SelectItem, SelectList, Text
+from textual.widgets import Static
+from tui import SelectItem, SelectScreen
 
 if TYPE_CHECKING:
-    from coding_agent.modes.interactive.session import InteractiveSession
+    from coding_agent.modes.interactive.session import HaikuApp
 
 
 @dataclass(frozen=True)
 class SlashCommand:
     name: str
     description: str
-    handler: Callable[[InteractiveSession, str], Awaitable[None]]
+    handler: Callable[[HaikuApp, str], Awaitable[None]]
 
 
-async def _cmd_help(session: InteractiveSession, _args: str) -> None:
+async def _cmd_help(app: HaikuApp, _args: str) -> None:
     lines = ["Available commands:"]
     for command in sorted(COMMANDS.values(), key=lambda c: c.name):
         lines.append(f"  /{command.name} — {command.description}")
-    session.transcript.add(Text("\n".join(lines), style="dim"))
-    session.tui.request_render(force=True)
+    app.transcript.mount(Static("\n".join(lines), classes="dim"))
+    app._scroll_to_end(force=True)
 
 
-async def _cmd_quit(session: InteractiveSession, _args: str) -> None:
-    session.quit_requested = True
+async def _cmd_quit(app: HaikuApp, _args: str) -> None:
+    app.quit_requested = True
 
 
-async def _cmd_clear(session: InteractiveSession, _args: str) -> None:
+async def _cmd_clear(app: HaikuApp, _args: str) -> None:
     # Matches upstream Pi's `/clear` (aliased `/new`): starts a brand-new session file
     # rather than just wiping in-memory history, so the abandoned conversation stays
     # reachable via --resume/--continue against its own session id.
-    if session.new_session_factory is not None:
-        session.session = session.new_session_factory()
-        provider_id, _, model_id = session.model_label.partition("/")
-        session.session.record_model_change(provider=provider_id, model_id=model_id)
-    session.transcript.clear()
-    session.messages = []
-    session.tui.request_render(force=True)
+    if app.new_session_factory is not None:
+        app.session = app.new_session_factory()
+        provider_id, _, model_id = app.model_label.partition("/")
+        app.session.record_model_change(provider=provider_id, model_id=model_id)
+    await app.transcript.remove_children()
+    app.messages = []
 
 
-async def _cmd_model(session: InteractiveSession, _args: str) -> None:
-    if not session.models or session.on_model_change is None:
-        session.transcript.add(Text("Model switching is not available.", style="red"))
-        session.tui.request_render(force=True)
+async def _cmd_model(app: HaikuApp, _args: str) -> None:
+    if not app.models or app.on_model_change is None:
+        app.transcript.mount(Static("Model switching is not available.", classes="error"))
+        app._scroll_to_end(force=True)
         return
 
     items = [
@@ -54,28 +54,16 @@ async def _cmd_model(session: InteractiveSession, _args: str) -> None:
             label=f"{model.provider}/{model.id}",
             description=model.name,
         )
-        for model in session.models
+        for model in app.models
     ]
 
-    previous_focus = session.tui.focused
-    select_list = SelectList(items)
-
-    def on_select(item: SelectItem) -> None:
-        session.tui.remove(select_list)
-        session.tui.set_focus(previous_focus)
+    def on_dismiss(item: SelectItem | None) -> None:
+        if item is None:
+            return
         provider_id, model_id = item.id.split("/", 1)
-        session.start_model_switch(provider_id, model_id)
+        app.start_model_switch(provider_id, model_id)
 
-    def on_cancel() -> None:
-        session.tui.remove(select_list)
-        session.tui.set_focus(previous_focus)
-        session.tui.request_render(force=True)
-
-    select_list.on_select = on_select
-    select_list.on_cancel = on_cancel
-    session.tui.add(select_list)
-    session.tui.set_focus(select_list)
-    session.tui.request_render(force=True)
+    app.push_screen(SelectScreen(items), on_dismiss)
 
 
 COMMANDS: dict[str, SlashCommand] = {
@@ -86,7 +74,7 @@ COMMANDS: dict[str, SlashCommand] = {
 }
 
 
-async def dispatch(session: InteractiveSession, text: str) -> bool:
+async def dispatch(app: HaikuApp, text: str) -> bool:
     """Handle a slash command. Returns False if `text` isn't one."""
     if not text.startswith("/"):
         return False
@@ -99,9 +87,9 @@ async def dispatch(session: InteractiveSession, text: str) -> bool:
     rest = parts[1] if len(parts) > 1 else ""
     command = COMMANDS.get(name)
     if command is None:
-        session.transcript.add(Text(f"Unknown command: /{name}", style="red"))
-        session.tui.request_render(force=True)
+        app.transcript.mount(Static(f"Unknown command: /{name}", classes="error"))
+        app._scroll_to_end(force=True)
         return True
 
-    await command.handler(session, rest)
+    await command.handler(app, rest)
     return True

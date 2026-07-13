@@ -1,14 +1,19 @@
 from __future__ import annotations
 
-from tui import Text
+from textual.widgets import Static
 
 
-class AssistantMessageComponent(Text):
+class AssistantMessageComponent(Static):
     """Renders one assistant turn's accumulated streamed text."""
 
+    DEFAULT_CSS = """
+    AssistantMessageComponent.error { color: $error; }
+    """
+
     def __init__(self) -> None:
-        super().__init__(text="")
+        super().__init__("")
+        self.text = ""
 
     def update_delta(self, delta: str) -> None:
         self.text += delta
-        self.invalidate()
+        self.update(self.text)
