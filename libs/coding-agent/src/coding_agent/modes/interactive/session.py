@@ -13,6 +13,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
+from textual.theme import Theme
 from textual.widgets import Input, Static
 from textual.widgets.option_list import Option
 from upstream.models import (
@@ -82,10 +83,20 @@ class HaikuApp(App[None]):
         initial_entries: list[EntryRef] | None = None,
         compaction_message: SystemMessage | None = None,
         new_session_factory: Callable[[], SessionManager] | None = None,
+        themes: list[Theme] | None = None,
+        theme_name: str | None = None,
     ) -> None:
         super().__init__()
         self.register_theme(STARGAZER_DARK)
-        self.theme = STARGAZER_DARK.name
+        for theme in themes or []:
+            self.register_theme(theme)
+        self._unknown_theme_name: str | None = None
+        if theme_name is not None and theme_name in self.available_themes:
+            self.theme = theme_name
+        else:
+            self.theme = STARGAZER_DARK.name
+            if theme_name is not None:
+                self._unknown_theme_name = theme_name
         self.agent = agent
         self.use_tools = use_tools
         self.system_prompt = system_prompt
@@ -119,6 +130,13 @@ class HaikuApp(App[None]):
         yield PromptBar(status=self._status_line())
 
     def on_mount(self) -> None:
+        if self._unknown_theme_name is not None:
+            self.transcript.mount(
+                Static(
+                    f"Unknown theme '{self._unknown_theme_name}', using '{STARGAZER_DARK.name}'.",
+                    classes="error",
+                )
+            )
         self._replay_history(self._initial_entries)
         self.prompt_bar.input.focus()
         # Fires on *any* change to the transcript's scroll position — keyboard (PageUp/
@@ -403,6 +421,8 @@ async def run_interactive(
     initial_entries: list[EntryRef] | None = None,
     compaction_message: SystemMessage | None = None,
     new_session_factory: Callable[[], SessionManager] | None = None,
+    themes: list[Theme] | None = None,
+    theme_name: str | None = None,
 ) -> None:
     # Unlike the old hand-rolled terminal driver (which raised cleanly from
     # `ProcessTerminal.enter_raw_mode()`), Textual's own driver doesn't reject a non-tty
@@ -425,5 +445,7 @@ async def run_interactive(
         initial_entries=initial_entries,
         compaction_message=compaction_message,
         new_session_factory=new_session_factory,
+        themes=themes,
+        theme_name=theme_name,
     )
     await app.run_async()

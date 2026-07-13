@@ -67,11 +67,23 @@ async def _cmd_model(app: HaikuApp, _args: str) -> None:
     app.push_screen(SelectScreen(items), on_dismiss)
 
 
+async def _cmd_theme(app: HaikuApp, _args: str) -> None:
+    items = [SelectItem(id=name, label=name) for name in sorted(app.available_themes)]
+
+    def on_dismiss(item: SelectItem | None) -> None:
+        if item is None:
+            return
+        app.theme = item.id
+
+    app.push_screen(SelectScreen(items), on_dismiss)
+
+
 COMMANDS: dict[str, SlashCommand] = {
     "help": SlashCommand("help", "List available commands.", _cmd_help),
     "quit": SlashCommand("quit", "Exit interactive mode.", _cmd_quit),
     "clear": SlashCommand("clear", "Clear the conversation history.", _cmd_clear),
     "model": SlashCommand("model", "Switch the active model.", _cmd_model),
+    "theme": SlashCommand("theme", "Switch the color theme.", _cmd_theme),
 }
 
 

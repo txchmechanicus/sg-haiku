@@ -98,6 +98,10 @@ def main(
     model: Annotated[
         str | None, typer.Option("--model", help="Model name.")
     ] = None,
+    theme: Annotated[
+        str | None,
+        typer.Option("--theme", help="Interactive-mode color theme name."),
+    ] = None,
     base_url: Annotated[
         str | None,
         typer.Option("--base-url", help="OpenAI-compatible API base URL."),
@@ -283,6 +287,7 @@ def main(
                     compaction_details=compaction_details,
                     session_dir=session_dir,
                     write_session=not no_session,
+                    theme_name=theme,
                 )
             )
         except ValueError as exc:

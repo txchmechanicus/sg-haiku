@@ -9,6 +9,7 @@ from agent.sessions import SessionManager
 from upstream.providers import ModelProvider
 from upstream.registry import ModelRegistry
 
+from coding_agent.cli.console import error_console
 from coding_agent.cli.helpers import (
     build_compaction_summary_message,
     build_extension_runner,
@@ -17,6 +18,7 @@ from coding_agent.cli.helpers import (
 from coding_agent.config import ProviderConfig
 from coding_agent.extensions import SessionShutdownEvent, SessionStartEvent
 from coding_agent.modes.interactive import run_interactive
+from coding_agent.modes.interactive.theme import discover_custom_themes
 
 
 async def run(
@@ -34,8 +36,12 @@ async def run(
     compaction_details: dict[str, object] | None,
     session_dir: Path,
     write_session: bool,
+    theme_name: str | None = None,
 ) -> None:
     cwd = Path.cwd()
+    themes, theme_warnings = discover_custom_themes(cwd)
+    for warning in theme_warnings:
+        error_console.print(f"[yellow]theme warning:[/yellow] {warning}")
     registry = build_tool_registry(
         no_builtin_tools=no_builtin_tools,
         tools=tools,
@@ -102,6 +108,8 @@ async def run(
             compaction_message=compaction_message,
             session=session,
             new_session_factory=new_session_factory,
+            themes=themes,
+            theme_name=theme_name,
         )
     finally:
         await runner.notify("session_shutdown", SessionShutdownEvent(reason="quit"))

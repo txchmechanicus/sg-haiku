@@ -218,7 +218,7 @@ async def test_typing_slash_shows_filtered_command_hints() -> None:
 
         hints = app.prompt_bar.hints
         assert hints.has_class("-visible")
-        assert hints.option_count == 4  # help, quit, clear, model
+        assert hints.option_count == 5  # help, quit, clear, model, theme
 
         await pilot.press("c")
         await pilot.pause()
@@ -320,3 +320,31 @@ async def test_escape_dismisses_hints_without_clearing_input() -> None:
 
         assert not app.prompt_bar.hints.has_class("-visible")
         assert app.prompt_bar.input.value == "/cl"
+
+
+async def test_theme_command_lists_and_switches_themes() -> None:
+    app = _new_app()
+    async with app.run_test() as pilot:
+        original_theme = app.theme
+        assert "nord" in app.available_themes  # a Textual built-in, free of charge
+
+        await _submit(pilot, "/theme")
+        await pilot.pause()
+
+        # The picker lists every registered theme, sorted; pick something other than
+        # whatever's currently active so the assertion below is meaningful regardless
+        # of which theme happens to be the default.
+        screen = app.screen
+        option_list = screen.query_one("OptionList")
+        target_index = next(
+            i
+            for i in range(option_list.option_count)
+            if option_list.get_option_at_index(i).id != original_theme
+        )
+        while option_list.highlighted != target_index:
+            await pilot.press("down")
+            await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.theme != original_theme
