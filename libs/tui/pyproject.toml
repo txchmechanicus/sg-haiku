@@ -5,6 +5,7 @@ description = "Haiku interactive terminal UI"
 requires-python = ">=3.11"
 dependencies = [
     "rich>=13.7.0",
+    "textual>=0.60.0",
 ]
 
 [build-system]
