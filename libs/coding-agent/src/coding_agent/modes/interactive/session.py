@@ -31,6 +31,7 @@ from coding_agent.modes.interactive.components import (
     PromptBar,
     ToolExecutionComponent,
 )
+from coding_agent.modes.interactive.theme import STARGAZER_DARK
 
 
 def _assistant_text(message: AssistantMessage) -> str:
@@ -41,7 +42,8 @@ class HaikuApp(App[None]):
     """Owns the agent, conversation state, and the Textual widget tree for a single
     interactive-mode run. Mirrors the event-wiring slice of Pi's
     `interactive-mode.ts`: session persistence and slash commands (/help, /quit, /clear,
-    /model) are implemented; themes and autocomplete are not.
+    /model) are implemented; a single built-in dark theme is applied, no theme
+    switching/autocomplete are implemented.
     """
 
     CSS = """
@@ -81,6 +83,8 @@ class HaikuApp(App[None]):
         new_session_factory: Callable[[], SessionManager] | None = None,
     ) -> None:
         super().__init__()
+        self.register_theme(STARGAZER_DARK)
+        self.theme = STARGAZER_DARK.name
         self.agent = agent
         self.use_tools = use_tools
         self.system_prompt = system_prompt
