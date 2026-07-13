@@ -14,6 +14,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.widgets import Input, Static
+from textual.widgets.option_list import Option
 from upstream.models import (
     AssistantMessage,
     Message,
@@ -206,6 +207,9 @@ class HaikuApp(App[None]):
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         event.input.value = ""
+        await self._handle_submitted_text(text)
+
+    async def _handle_submitted_text(self, text: str) -> None:
         if not text:
             return
 
@@ -224,7 +228,78 @@ class HaikuApp(App[None]):
             pass
         self._turn_task = None
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self._update_command_hints(event.value)
+
+    def _update_command_hints(self, text: str) -> None:
+        """Shows a filtered dropdown of matching slash commands while the input holds an
+        in-progress command name (`/` with no space yet) — hidden the moment there's a
+        space (an argument has started) or the text no longer starts with `/`."""
+        hints = self.prompt_bar.hints
+        matches = []
+        if text.startswith("/") and " " not in text:
+            query = text[1:].lower()
+            matches = [
+                command
+                for command in sorted(commands.COMMANDS.values(), key=lambda c: c.name)
+                if command.name.startswith(query)
+            ]
+        if not matches:
+            hints.remove_class("-visible")
+            hints.clear_options()
+            return
+        hints.clear_options()
+        hints.add_options(
+            Option(f"/{command.name} — {command.description}", id=command.name)
+            for command in matches
+        )
+        hints.highlighted = 0
+        hints.add_class("-visible")
+
+    async def _accept_command_hint(self) -> None:
+        hints = self.prompt_bar.hints
+        option = hints.highlighted
+        command_id = hints.get_option_at_index(option).id if option is not None else None
+        hints.remove_class("-visible")
+        hints.clear_options()
+        if command_id is None:
+            return
+        command = commands.COMMANDS.get(command_id)
+        input_widget = self.prompt_bar.input
+        if command is not None and not command.takes_args:
+            # No arguments to type — running the command immediately (instead of
+            # filling the text and waiting for a second Enter) matches how a
+            # no-argument command behaves everywhere else: select it and it runs.
+            input_widget.value = ""
+            await self._handle_submitted_text(f"/{command_id}")
+            return
+        input_widget.value = f"/{command_id} "
+        input_widget.cursor_position = len(input_widget.value)
+
     async def on_key(self, event: events.Key) -> None:
+        hints = self.prompt_bar.hints
+        if hints.has_class("-visible"):
+            if event.key == "up":
+                event.stop()
+                event.prevent_default()
+                hints.action_cursor_up()
+                return
+            if event.key == "down":
+                event.stop()
+                event.prevent_default()
+                hints.action_cursor_down()
+                return
+            if event.key in ("tab", "enter"):
+                event.stop()
+                event.prevent_default()
+                await self._accept_command_hint()
+                return
+            if event.key == "escape":
+                event.stop()
+                event.prevent_default()
+                hints.remove_class("-visible")
+                hints.clear_options()
+                return
         if event.key == "ctrl+c":
             event.stop()
             if self._turn_task is not None and not self._turn_task.done():

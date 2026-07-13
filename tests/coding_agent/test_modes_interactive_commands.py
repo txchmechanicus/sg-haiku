@@ -208,3 +208,115 @@ async def test_clear_starts_a_new_session_file(tmp_path: Path) -> None:
         assert app.messages == []
         assert list(app.transcript.children) == []
     assert second_path.exists()
+
+
+async def test_typing_slash_shows_filtered_command_hints() -> None:
+    app = _new_app()
+    async with app.run_test() as pilot:
+        await pilot.press("/")
+        await pilot.pause()
+
+        hints = app.prompt_bar.hints
+        assert hints.has_class("-visible")
+        assert hints.option_count == 4  # help, quit, clear, model
+
+        await pilot.press("c")
+        await pilot.pause()
+
+        assert hints.option_count == 1
+        assert hints.get_option_at_index(0).id == "clear"
+
+
+async def test_hints_hide_once_a_space_or_no_match_is_typed() -> None:
+    app = _new_app()
+    async with app.run_test() as pilot:
+        await pilot.press(*"/clear")
+        await pilot.pause()
+        assert app.prompt_bar.hints.has_class("-visible")
+
+        await pilot.press(" ")
+        await pilot.pause()
+        assert not app.prompt_bar.hints.has_class("-visible")
+
+        await pilot.press(*"/nope")
+        await pilot.pause()
+        assert not app.prompt_bar.hints.has_class("-visible")
+
+
+async def test_tab_immediately_runs_a_no_args_command_hint() -> None:
+    app = _new_app()
+    async with app.run_test() as pilot:
+        app.messages = [UserMessage(content="placeholder")]
+        app.transcript.mount(Static("placeholder"))
+        await pilot.pause()
+
+        await pilot.press(*"/cl")
+        await pilot.pause()
+
+        await pilot.press("tab")
+        await pilot.pause()
+
+        # /clear takes no arguments, so selecting it (Tab or Enter) runs it right
+        # away instead of just filling "/clear " and waiting for a second press.
+        assert app.prompt_bar.input.value == ""
+        assert not app.prompt_bar.hints.has_class("-visible")
+        assert app.messages == []
+
+
+async def test_arrow_keys_navigate_hints_and_enter_runs_immediately() -> None:
+    app = _new_app()
+    async with app.run_test() as pilot:
+        await pilot.press("/")
+        await pilot.pause()
+        assert app.prompt_bar.hints.highlighted == 0  # "clear" (alphabetically first)
+
+        await pilot.press("down")
+        await pilot.pause()
+        assert app.prompt_bar.hints.highlighted == 1  # "help"
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        # /help takes no arguments, so a single Enter runs it immediately.
+        assert app.prompt_bar.input.value == ""
+        assert not app.prompt_bar.hints.has_class("-visible")
+        assert any("/help" in text for text in _rendered_statics(app))
+
+
+async def test_hint_selection_fills_text_for_a_command_that_takes_args(
+    monkeypatch,
+) -> None:
+    from coding_agent.modes.interactive import commands as commands_module
+
+    async def _noop(app, args):  # pragma: no cover - never actually dispatched here
+        raise AssertionError("should not run: only completion is expected")
+
+    fake_command = commands_module.SlashCommand(
+        "resume", "Resume a session by id.", _noop, takes_args=True
+    )
+    monkeypatch.setitem(commands_module.COMMANDS, "resume", fake_command)
+
+    app = _new_app()
+    async with app.run_test() as pilot:
+        await pilot.press(*"/res")
+        await pilot.pause()
+
+        await pilot.press("tab")
+        await pilot.pause()
+
+        assert app.prompt_bar.input.value == "/resume "
+        assert not app.prompt_bar.hints.has_class("-visible")
+
+
+async def test_escape_dismisses_hints_without_clearing_input() -> None:
+    app = _new_app()
+    async with app.run_test() as pilot:
+        await pilot.press(*"/cl")
+        await pilot.pause()
+        assert app.prompt_bar.hints.has_class("-visible")
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert not app.prompt_bar.hints.has_class("-visible")
+        assert app.prompt_bar.input.value == "/cl"

@@ -16,6 +16,7 @@ class SlashCommand:
     name: str
     description: str
     handler: Callable[[HaikuApp, str], Awaitable[None]]
+    takes_args: bool = False
 
 
 async def _cmd_help(app: HaikuApp, _args: str) -> None:
