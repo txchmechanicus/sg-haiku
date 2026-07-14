@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import sys
 import tomllib
 from pathlib import Path
 from uuid import uuid4
@@ -28,6 +29,10 @@ from coding_agent.extensions.types import (
 
 GLOBAL_EXTENSIONS_DIR = Path.home() / ".haiku" / "extensions"
 PROJECT_EXTENSIONS_DIR_NAME = Path(".haiku") / "extensions"
+
+# Tracks venv site-packages dirs already appended to sys.path this process, so re-loading
+# extensions (e.g. across multiple discover_and_load_extensions calls) never adds duplicates.
+_spliced_venv_paths: set[str] = set()
 
 
 async def discover_and_load_extensions(
@@ -162,9 +167,63 @@ async def _load_extension(path: str, cwd: Path) -> tuple[Extension | None, str |
         return None, f"Failed to load extension: {exc}"
 
 
+def _find_extension_venv_site_packages(entry_point: Path) -> Path | None:
+    """Looks for a `.venv/` sibling in the entry point's containing extension directory
+    (installed by `extensions.install.provision_venv`) and returns its site-packages dir, or
+    `None` if there's no venv or it's malformed. Never raises -- a broken/missing venv just
+    means the extension loads against the host's own `sys.path` only, same as before this
+    feature existed."""
+    venv_dir = entry_point.parent / ".venv"
+    if not venv_dir.is_dir():
+        return None
+
+    pyvenv_cfg = venv_dir / "pyvenv.cfg"
+    if pyvenv_cfg.exists():
+        try:
+            for line in pyvenv_cfg.read_text(encoding="utf-8").splitlines():
+                key, _, value = line.partition("=")
+                if key.strip() == "version_info" or key.strip() == "version":
+                    major, minor, *_ = value.strip().split(".")
+                    candidate = venv_dir / "lib" / f"python{major}.{minor}" / "site-packages"
+                    if candidate.is_dir():
+                        return candidate
+        except OSError:
+            pass
+
+    windows_candidate = venv_dir / "Lib" / "site-packages"
+    if windows_candidate.is_dir():
+        return windows_candidate
+
+    matches = sorted(venv_dir.glob("lib/python3.*/site-packages"))
+    if matches:
+        return matches[0]
+
+    return None
+
+
+def _splice_venv_path(entry_point: Path) -> None:
+    """Appends (never prepends) the extension's venv site-packages dir to `sys.path`, if any,
+    so its declared dependencies become importable when the extension module executes.
+    Appending -- not prepending -- means the host's own already-resolvable dependency
+    versions always win on a name collision (host's own site-packages entries are earlier in
+    `sys.path`); this is deliberate ("don't break the agent"), not an oversight. Never removed
+    afterward, matching the process-lifetime `sys.path` addition the hand-written
+    `atlas_browser` extension already does for the same reason."""
+    site_packages = _find_extension_venv_site_packages(entry_point)
+    if site_packages is None:
+        return
+    key = str(site_packages)
+    if key in _spliced_venv_paths:
+        return
+    _spliced_venv_paths.add(key)
+    sys.path.append(key)
+
+
 def _load_extension_module(resolved_path: Path):  # noqa: ANN202 - returns the raw `activate` attr
     if not resolved_path.exists():
         raise FileNotFoundError(f"Extension entry point not found: {resolved_path}")
+
+    _splice_venv_path(resolved_path)
 
     module_name = f"_haiku_extension_{uuid4().hex}"
     is_package_entry = resolved_path.name == "__init__.py"

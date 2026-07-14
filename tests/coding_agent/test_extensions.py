@@ -582,3 +582,126 @@ def activate(api: ExtensionAPI) -> None:
 
         assert result.exit_code == 0
         assert marker_file.read_text() == "found"
+
+
+class TestExtensionVenvSplicing:
+    """Covers the loader-side half of `haiku extensions install`'s per-extension venv
+    isolation: `.venv/` site-packages discovery and its (append-only, permanent) `sys.path`
+    splicing in `loader._load_extension_module`."""
+
+    def test_finds_site_packages_via_glob(self, tmp_path: Path) -> None:
+        from coding_agent.extensions import loader
+
+        entry_point = tmp_path / "my_ext" / "__init__.py"
+        entry_point.parent.mkdir(parents=True)
+        entry_point.write_text("", encoding="utf-8")
+        site_packages = entry_point.parent / ".venv" / "lib" / "python3.11" / "site-packages"
+        site_packages.mkdir(parents=True)
+
+        found = loader._find_extension_venv_site_packages(entry_point)
+
+        assert found == site_packages
+
+    def test_prefers_pyvenv_cfg_version(self, tmp_path: Path) -> None:
+        from coding_agent.extensions import loader
+
+        entry_point = tmp_path / "my_ext" / "__init__.py"
+        entry_point.parent.mkdir(parents=True)
+        entry_point.write_text("", encoding="utf-8")
+        venv_dir = entry_point.parent / ".venv"
+        site_packages = venv_dir / "lib" / "python3.12" / "site-packages"
+        site_packages.mkdir(parents=True)
+        (venv_dir / "pyvenv.cfg").write_text("version_info = 3.12.4\n", encoding="utf-8")
+
+        found = loader._find_extension_venv_site_packages(entry_point)
+
+        assert found == site_packages
+
+    def test_no_venv_returns_none(self, tmp_path: Path) -> None:
+        from coding_agent.extensions import loader
+
+        entry_point = tmp_path / "my_ext" / "__init__.py"
+        entry_point.parent.mkdir(parents=True)
+        entry_point.write_text("", encoding="utf-8")
+
+        assert loader._find_extension_venv_site_packages(entry_point) is None
+
+    def test_venv_present_but_empty_returns_none(self, tmp_path: Path) -> None:
+        from coding_agent.extensions import loader
+
+        entry_point = tmp_path / "my_ext" / "__init__.py"
+        entry_point.parent.mkdir(parents=True)
+        entry_point.write_text("", encoding="utf-8")
+        (entry_point.parent / ".venv").mkdir()
+
+        assert loader._find_extension_venv_site_packages(entry_point) is None
+
+    @pytest.mark.asyncio
+    async def test_extension_can_import_its_venv_dependency(self, tmp_path: Path) -> None:
+        from uuid import uuid4
+
+        module_name = f"fake_dep_{uuid4().hex}"
+        ext_dir = tmp_path / ".haiku" / "extensions" / "my_ext"
+        site_packages = ext_dir / ".venv" / "lib" / "python3.11" / "site-packages"
+        site_packages.mkdir(parents=True)
+        (site_packages / f"{module_name}.py").write_text("VALUE = 42\n", encoding="utf-8")
+
+        _write_extension(
+            ext_dir,
+            "__init__.py",
+            f'''
+import {module_name}
+from coding_agent.extensions import ExtensionAPI
+
+
+def activate(api: ExtensionAPI) -> None:
+    assert {module_name}.VALUE == 42
+''',
+        )
+
+        result = await discover_and_load_extensions(None, tmp_path)
+
+        assert result.errors == []
+        assert len(result.extensions) == 1
+
+    @pytest.mark.asyncio
+    async def test_host_path_wins_over_venv_path_on_name_collision(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Locks in the accepted, documented limitation: appending (not prepending) the
+        venv's site-packages means the host's own already-resolvable version of a
+        same-named module always wins."""
+        import sys
+        from uuid import uuid4
+
+        module_name = f"collide_{uuid4().hex}"
+
+        host_path = tmp_path / "host_path"
+        host_path.mkdir()
+        (host_path / f"{module_name}.py").write_text("VALUE = 'host'\n", encoding="utf-8")
+        monkeypatch.syspath_prepend(str(host_path))
+
+        ext_dir = tmp_path / ".haiku" / "extensions" / "my_ext"
+        site_packages = ext_dir / ".venv" / "lib" / "python3.11" / "site-packages"
+        site_packages.mkdir(parents=True)
+        (site_packages / f"{module_name}.py").write_text("VALUE = 'venv'\n", encoding="utf-8")
+
+        _write_extension(
+            ext_dir,
+            "__init__.py",
+            f'''
+import {module_name}
+from coding_agent.extensions import ExtensionAPI
+
+
+def activate(api: ExtensionAPI) -> None:
+    assert {module_name}.VALUE == "host"
+''',
+        )
+
+        result = await discover_and_load_extensions(None, tmp_path)
+
+        assert result.errors == []
+        assert len(result.extensions) == 1
+
+        del sys.modules[module_name]
