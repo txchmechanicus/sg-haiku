@@ -15,6 +15,7 @@ from textual.widgets import Static
 from upstream.models import (
     AssistantMessage,
     AssistantMessageEvent,
+    ImageContent,
     Message,
     TextContent,
     ToolCall,
@@ -122,6 +123,136 @@ async def _submit(pilot: Pilot, text: str) -> None:
 
 def _rendered_statics(app: HaikuApp) -> list[str]:
     return [str(widget.render()) for widget in app.query(Static)]
+
+
+async def test_at_symbol_shows_file_hints(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
+    provider = _ScriptedProvider([_text_turn("ok")])
+    agent = Agent(provider=provider, tools=_NoTools())
+    app = HaikuApp(agent)
+
+    async with app.run_test() as pilot:
+        await pilot.press("@")
+        await pilot.pause()
+
+        hints = app.prompt_bar.hints
+        assert hints.has_class("-visible")
+        ids = [hints.get_option_at_index(i).id for i in range(hints.option_count)]
+        assert "notes.txt" in ids
+
+
+async def test_at_hints_hidden_after_a_space(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
+    provider = _ScriptedProvider([_text_turn("ok")])
+    agent = Agent(provider=provider, tools=_NoTools())
+    app = HaikuApp(agent)
+
+    async with app.run_test() as pilot:
+        await pilot.press(*"@notes.txt")
+        await pilot.pause()
+        assert app.prompt_bar.hints.has_class("-visible")
+
+        await pilot.press(" ")
+        await pilot.pause()
+        assert not app.prompt_bar.hints.has_class("-visible")
+
+
+async def test_selecting_file_hint_inserts_path_with_trailing_space(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
+    provider = _ScriptedProvider([_text_turn("ok")])
+    agent = Agent(provider=provider, tools=_NoTools())
+    app = HaikuApp(agent)
+
+    async with app.run_test() as pilot:
+        await pilot.press(*"@not")
+        await pilot.pause()
+        await pilot.press("tab")
+        await pilot.pause()
+
+        assert app.prompt_bar.input.value == "@notes.txt "
+        assert not app.prompt_bar.hints.has_class("-visible")
+
+
+async def test_selecting_directory_hint_keeps_hints_open(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("", encoding="utf-8")
+    provider = _ScriptedProvider([_text_turn("ok")])
+    agent = Agent(provider=provider, tools=_NoTools())
+    app = HaikuApp(agent)
+
+    async with app.run_test() as pilot:
+        await pilot.press(*"@sr")
+        await pilot.pause()
+        await pilot.press("tab")
+        await pilot.pause()
+
+        assert app.prompt_bar.input.value == "@src/"
+        assert app.prompt_bar.hints.has_class("-visible")
+
+
+async def test_submitting_at_mention_attaches_file_text(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "notes.txt").write_text("the secret is banana", encoding="utf-8")
+    provider = _ScriptedProvider([_text_turn("ok")])
+    agent = Agent(provider=provider, tools=_NoTools())
+    app = HaikuApp(agent)
+
+    async with app.run_test() as pilot:
+        await _submit(pilot, "@notes.txt what is the secret?")
+
+        sent = provider.seen_initial_messages[-1][-1]
+        assert isinstance(sent.content, str)
+        assert "the secret is banana" in sent.content
+        assert "what is the secret?" in sent.content
+        # The transcript shows exactly what was typed, mention included -- only the actual
+        # provider request gets the file content prepended.
+        assert any("@notes.txt what is the secret?" in text for text in _rendered_statics(app))
+
+
+async def test_submitting_at_mention_attaches_image(tmp_path: Path, monkeypatch) -> None:
+    from io import BytesIO
+
+    from PIL import Image
+
+    monkeypatch.chdir(tmp_path)
+    buffer = BytesIO()
+    Image.new("RGB", (10, 10), color="red").save(buffer, format="PNG")
+    (tmp_path / "pic.png").write_bytes(buffer.getvalue())
+    provider = _ScriptedProvider([_text_turn("ok")])
+    agent = Agent(provider=provider, tools=_NoTools())
+    app = HaikuApp(agent)
+
+    async with app.run_test() as pilot:
+        await _submit(pilot, "@pic.png describe this")
+
+        sent = provider.seen_initial_messages[-1][-1]
+        assert isinstance(sent.content, list)
+        assert any(isinstance(part, ImageContent) for part in sent.content)
+        assert any(
+            isinstance(part, TextContent) and "describe this" in part.text
+            for part in sent.content
+        )
+
+
+async def test_submitting_missing_at_mention_shows_error_and_does_not_run_turn(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    provider = _ScriptedProvider([_text_turn("should not run")])
+    agent = Agent(provider=provider, tools=_NoTools())
+    app = HaikuApp(agent)
+
+    async with app.run_test() as pilot:
+        await _submit(pilot, "@missing.txt hello")
+
+        assert provider.seen_initial_messages == []
+        assert any("error" in text.lower() for text in _rendered_statics(app))
 
 
 async def test_session_streams_deltas() -> None:

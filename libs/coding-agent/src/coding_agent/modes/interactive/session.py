@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 from agent import Agent
 from agent.entries import EntryRef
@@ -18,6 +19,7 @@ from textual.widgets import Input, Static
 from textual.widgets.option_list import Option
 from upstream.models import (
     AssistantMessage,
+    ImageContent,
     Message,
     SystemMessage,
     TextContent,
@@ -33,7 +35,13 @@ from coding_agent.modes.interactive.components import (
     PromptBar,
     ToolExecutionComponent,
 )
+from coding_agent.modes.interactive.file_mentions import (
+    extract_at_mentions,
+    find_at_mention_span,
+    list_file_mentions,
+)
 from coding_agent.modes.interactive.theme import STARGAZER_DARK
+from coding_agent.tools.file_attachments import FileProcessingError, process_file_arguments
 
 
 def _assistant_text(message: AssistantMessage) -> str:
@@ -119,6 +127,12 @@ class HaikuApp(App[None]):
         self._submission_task: asyncio.Task[None] | None = None
         self._abort_requested = False
         self.quit_requested = False
+        # Which kind of hint the prompt-bar's OptionList is currently showing -- "command"
+        # (a "/"-prefixed input, unchanged behavior) or "file" (an active "@"-mention under
+        # the cursor); None means hints are hidden. `_hint_file_span` is the (start, end)
+        # index range of the "@token" being completed, used to splice the selection back in.
+        self._hint_mode: str | None = None
+        self._hint_file_span: tuple[int, int] | None = None
         # "Sticky" auto-scroll: true while the user is following the bottom of the
         # transcript. Kept in sync with the *real* scroll position via `watch()` below —
         # not inferred by comparing `scroll_y`/`max_scroll_y` at arbitrary points in time,
@@ -252,7 +266,22 @@ class HaikuApp(App[None]):
         self.transcript.mount(Static(f"> {text}", classes="user-message"))
         self._scroll_to_end(force=True)
 
-        self._turn_task = asyncio.ensure_future(self._run_turn(text))
+        prompt: str | list[TextContent | ImageContent] = text
+        mentioned_paths = extract_at_mentions(text)
+        if mentioned_paths:
+            try:
+                processed = process_file_arguments(mentioned_paths, Path.cwd())
+            except FileProcessingError as exc:
+                self.transcript.mount(Static(f"error: {exc}", classes="error"))
+                self._scroll_to_end(force=True)
+                return
+            combined_text = f"{processed.text}\n\n{text}" if processed.text else text
+            if processed.images:
+                prompt = [TextContent(text=combined_text), *processed.images]
+            else:
+                prompt = combined_text
+
+        self._turn_task = asyncio.ensure_future(self._run_turn(prompt))
         try:
             await self._turn_task
         except asyncio.CancelledError:
@@ -260,7 +289,18 @@ class HaikuApp(App[None]):
         self._turn_task = None
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        self._update_command_hints(event.value)
+        if event.value.startswith("/") and " " not in event.value:
+            self._update_command_hints(event.value)
+            return
+        cursor_position = self.prompt_bar.input.cursor_position
+        if self._update_at_mention_hints(event.value, cursor_position):
+            return
+        hints = self.prompt_bar.hints
+        if hints.has_class("-visible"):
+            hints.remove_class("-visible")
+            hints.clear_options()
+        self._hint_mode = None
+        self._hint_file_span = None
 
     def _update_command_hints(self, text: str) -> None:
         """Shows a filtered dropdown of matching slash commands while the input holds an
@@ -278,6 +318,7 @@ class HaikuApp(App[None]):
         if not matches:
             hints.remove_class("-visible")
             hints.clear_options()
+            self._hint_mode = None
             return
         hints.clear_options()
         hints.add_options(
@@ -286,6 +327,33 @@ class HaikuApp(App[None]):
         )
         hints.highlighted = 0
         hints.add_class("-visible")
+        self._hint_mode = "command"
+
+    def _update_at_mention_hints(self, text: str, cursor_position: int) -> bool:
+        """Shows a filtered dropdown of matching files/directories while the cursor sits
+        inside an in-progress `@`-mention — mirrors `_update_command_hints`, but the query is
+        a filesystem path (looked up live) instead of a fixed command list, and the match can
+        appear anywhere in the message, not just at the start. Returns whether hints are now
+        showing, so `on_input_changed` knows not to also fall through to hiding them."""
+        span = find_at_mention_span(text, cursor_position)
+        hints = self.prompt_bar.hints
+        if span is None:
+            return False
+        start, end = span
+        query = text[start + 1 : end]
+        matches = list_file_mentions(query, Path.cwd())
+        if not matches:
+            hints.remove_class("-visible")
+            hints.clear_options()
+            self._hint_mode = None
+            return False
+        hints.clear_options()
+        hints.add_options(Option(match.display, id=match.insert) for match in matches)
+        hints.highlighted = 0
+        hints.add_class("-visible")
+        self._hint_mode = "file"
+        self._hint_file_span = (start, end)
+        return True
 
     async def _accept_command_hint(self) -> None:
         hints = self.prompt_bar.hints
@@ -293,6 +361,7 @@ class HaikuApp(App[None]):
         command_id = hints.get_option_at_index(option).id if option is not None else None
         hints.remove_class("-visible")
         hints.clear_options()
+        self._hint_mode = None
         if command_id is None:
             return
         command = commands.COMMANDS.get(command_id)
@@ -306,6 +375,26 @@ class HaikuApp(App[None]):
             return
         input_widget.value = f"/{command_id} "
         input_widget.cursor_position = len(input_widget.value)
+
+    def _accept_file_hint(self) -> None:
+        hints = self.prompt_bar.hints
+        option = hints.highlighted
+        insert = hints.get_option_at_index(option).id if option is not None else None
+        hints.remove_class("-visible")
+        hints.clear_options()
+        span = self._hint_file_span
+        self._hint_mode = None
+        self._hint_file_span = None
+        if insert is None or span is None:
+            return
+        start, end = span
+        input_widget = self.prompt_bar.input
+        text = input_widget.value
+        # A directory selection leaves the trailing "/" with no space after it, so the hint
+        # list re-triggers for that deeper path instead of treating the mention as finished.
+        replacement = f"@{insert}" if insert.endswith("/") else f"@{insert} "
+        input_widget.value = text[:start] + replacement + text[end:]
+        input_widget.cursor_position = start + len(replacement)
 
     async def on_key(self, event: events.Key) -> None:
         hints = self.prompt_bar.hints
@@ -323,11 +412,16 @@ class HaikuApp(App[None]):
             if event.key in ("tab", "enter"):
                 event.stop()
                 event.prevent_default()
-                await self._accept_command_hint()
+                if self._hint_mode == "file":
+                    self._accept_file_hint()
+                else:
+                    await self._accept_command_hint()
                 return
             if event.key == "escape":
                 event.stop()
                 event.prevent_default()
+                self._hint_mode = None
+                self._hint_file_span = None
                 hints.remove_class("-visible")
                 hints.clear_options()
                 return
@@ -359,7 +453,7 @@ class HaikuApp(App[None]):
         if self._turn_task is not None and not self._turn_task.done():
             self._turn_task.cancel()
 
-    async def _run_turn(self, prompt: str) -> None:
+    async def _run_turn(self, prompt: str | list[TextContent | ImageContent]) -> None:
         self._current_assistant = None
         self._abort_requested = False
         async for event in self.agent.run(
