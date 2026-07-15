@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from coding_agent.cli import app
@@ -16,6 +17,75 @@ def test_cli_mock_prompt(tmp_path: Path, monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "Mock response: hello" in result.stdout
+
+
+def _flat(text: str) -> str:
+    """Rich wraps CliRunner output to a terminal width, splitting substrings across lines --
+    normalize before substring assertions."""
+    return re.sub(r"\s+", " ", text)
+
+
+def test_cli_at_file_attaches_text_content(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "notes.txt").write_text("the secret is banana", encoding="utf-8")
+
+    result = runner.invoke(app, ["@notes.txt", "what is the secret?", "--no-tools"])
+
+    assert result.exit_code == 0
+    stdout = _flat(result.stdout)
+    assert '<file name="' in stdout
+    assert "the secret is banana" in stdout
+    assert "what is the secret?" in stdout
+
+
+def test_cli_at_file_attaches_image_without_error(tmp_path: Path, monkeypatch) -> None:
+    from io import BytesIO
+
+    from PIL import Image
+
+    monkeypatch.chdir(tmp_path)
+    buffer = BytesIO()
+    Image.new("RGB", (10, 10), color="red").save(buffer, format="PNG")
+    (tmp_path / "pic.png").write_bytes(buffer.getvalue())
+
+    result = runner.invoke(app, ["@pic.png", "describe this", "--no-tools"])
+
+    assert result.exit_code == 0
+    stdout = _flat(result.stdout)
+    assert "ImageContent" in stdout
+    assert "describe this" in stdout
+
+
+def test_cli_multiple_at_files_before_prompt(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.txt").write_text("first attachment", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("second attachment", encoding="utf-8")
+
+    result = runner.invoke(app, ["@a.txt", "@b.txt", "summarize", "--no-tools"])
+
+    assert result.exit_code == 0
+    stdout = _flat(result.stdout)
+    assert "first attachment" in stdout
+    assert "second attachment" in stdout
+    assert "summarize" in stdout
+
+
+def test_cli_at_file_missing_exits_with_error(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["@does-not-exist.txt", "hello", "--no-tools"])
+
+    assert result.exit_code == 2
+    assert "File not found" in _flat(result.stderr)
+
+
+def test_cli_unquoted_multi_word_prompt_fails_clearly(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["hello", "world"])
+
+    assert result.exit_code == 2
+    assert "wrap your prompt in quotes" in _flat(result.stderr)
 
 
 def test_cli_mock_tool_flow(tmp_path: Path, monkeypatch) -> None:

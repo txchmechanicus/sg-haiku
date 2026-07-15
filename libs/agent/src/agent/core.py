@@ -81,7 +81,9 @@ AfterToolCallHook = Callable[
 ]
 BeforeProviderRequestHook = Callable[[ProviderRequestPayload], Awaitable[ProviderRequestPayload]]
 AfterProviderResponseHook = Callable[[AfterProviderResponseInfo], Awaitable[None]]
-BeforeAgentStartHook = Callable[[str, str], Awaitable[BeforeAgentStartResult | None]]
+BeforeAgentStartHook = Callable[
+    [str | list[TextContent | ImageContent], str], Awaitable[BeforeAgentStartResult | None]
+]
 ToolContextProvider = Callable[[], object | None]
 
 
@@ -282,7 +284,7 @@ class Agent:
 
     async def run(
         self,
-        prompt: str,
+        prompt: str | list[TextContent | ImageContent],
         *,
         initial_messages: list[Message] | None = None,
         system_prompt: str | None = None,

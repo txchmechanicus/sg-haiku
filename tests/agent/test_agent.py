@@ -23,7 +23,7 @@ from upstream import (
     ToolSpec,
     UserMessage,
 )
-from upstream.models import TextContent
+from upstream.models import ImageContent, TextContent
 from upstream.types import AgentToolResult
 
 
@@ -46,6 +46,26 @@ async def test_agent_returns_contract_events_without_tools(tmp_path: Path) -> No
         if event.type == "message_end" and getattr(event.message, "role", None) == "assistant"
     ]
     assert assistant_messages[0].content[0].text == "Mock response: hello"
+
+
+@pytest.mark.asyncio
+async def test_agent_run_accepts_multi_part_prompt_content(tmp_path: Path) -> None:
+    """`@file` attachments (cli/file_processor.py) pass a list of content parts instead of a
+    plain string -- Agent.run must build the initial UserMessage with that list verbatim."""
+    agent = Agent(provider=MockProvider(), cwd=tmp_path)
+    parts = [
+        TextContent(text="describe this"),
+        ImageContent(data="ZmFrZQ==", mimeType="image/png"),
+    ]
+
+    events = [event async for event in agent.run(parts)]
+
+    user_messages = [
+        event.message
+        for event in events
+        if event.type == "message_end" and getattr(event.message, "role", None) == "user"
+    ]
+    assert user_messages[0].content == parts
 
 
 @pytest.mark.asyncio

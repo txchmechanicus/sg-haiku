@@ -19,7 +19,7 @@ from agent.sessions import (
     latest_session,
     resolve_session_reference,
 )
-from upstream.models import AssistantMessage
+from upstream.models import AssistantMessage, ImageContent, TextContent
 from upstream.registry import ModelRegistry
 
 from coding_agent.cli import interactive
@@ -42,14 +42,40 @@ from coding_agent.extensions import (
     SessionStartEvent,
     ThinkingLevelSelectEvent,
 )
+from coding_agent.tools.file_attachments import FileProcessingError, process_file_arguments
 
 
 class _HaikuGroup(typer.core.TyperGroup):
-    """Converts the first non-flag, non-subcommand positional arg to --prompt."""
+    """Converts the leading run of positional args (everything before the first `-`-prefixed
+    flag or known subcommand) into --prompt/--file options: `@`-prefixed tokens become
+    repeated --file entries (files/images to attach, matching Pi's `haiku @a.png @b.md
+    "message"` CLI convention), and at most one remaining non-`@` token becomes --prompt.
+    Everything from the first flag onward is left untouched."""
 
     def parse_args(self, ctx, args):  # type: ignore[override]
-        if args and not args[0].startswith("-") and args[0] not in self.commands:
-            args = ["--prompt", args[0], *args[1:]]
+        if not args or args[0].startswith("-") or args[0] in self.commands:
+            return super().parse_args(ctx, args)
+
+        index = 0
+        while index < len(args) and not args[index].startswith("-"):
+            index += 1
+        leading, rest = args[:index], args[index:]
+
+        file_tokens = [token[1:] for token in leading if token.startswith("@")]
+        prompt_tokens = [token for token in leading if not token.startswith("@")]
+        if len(prompt_tokens) > 1:
+            error_console.print(
+                "[red]error:[/red] Multiple prompt words given without quoting -- wrap your "
+                'prompt in quotes, e.g. haiku @file.txt "your prompt here".'
+            )
+            raise typer.Exit(2)
+
+        new_args: list[str] = []
+        for file_token in file_tokens:
+            new_args.extend(["--file", file_token])
+        if prompt_tokens:
+            new_args.extend(["--prompt", prompt_tokens[0]])
+        args = [*new_args, *rest]
         return super().parse_args(ctx, args)
 
 
@@ -75,6 +101,14 @@ def main(
     ctx: typer.Context,
     prompt: Annotated[
         str | None, typer.Option("--prompt", hidden=True, help="Prompt to run.")
+    ] = None,
+    file: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--file",
+            hidden=True,
+            help="File to attach (populated from leading @file args, not typed directly).",
+        ),
     ] = None,
     print_mode: Annotated[
         bool,
@@ -309,6 +343,7 @@ def main(
         if list_models:
             _print_models(models_config)
             return
+        processed_files = process_file_arguments(file or [], Path.cwd())
         config = ProviderConfig(
             provider=provider,
             model=model,
@@ -344,9 +379,14 @@ def main(
                 compaction_enabled=not no_compaction,
                 compaction_reserve_tokens=compaction_reserve_tokens,
                 compaction_keep_tokens=compaction_keep_tokens,
+                file_text=processed_files.text,
+                file_images=processed_files.images or None,
             )
         )
     except ValueError as exc:
+        error_console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(2) from exc
+    except FileProcessingError as exc:
         error_console.print(f"[red]error:[/red] {exc}")
         raise typer.Exit(2) from exc
 
@@ -378,6 +418,8 @@ async def _run(
     compaction_enabled: bool = True,
     compaction_reserve_tokens: int = 4096,
     compaction_keep_tokens: int = 8000,
+    file_text: str = "",
+    file_images: list[ImageContent] | None = None,
 ) -> None:
     cwd = Path.cwd()
     registry = build_tool_registry(
@@ -424,6 +466,14 @@ async def _run(
     )
     prompt = prompt_context.prompt
     effective_system_prompt = prompt_context.system_prompt
+    if file_text:
+        # File blocks come first, matching Pi's own fileText-then-message ordering
+        # (`buildInitialMessage`) -- applied after prompt-template substitution, so templates
+        # only ever run over the typed message text, never over attached file content.
+        prompt = f"{file_text}\n\n{prompt}" if prompt else file_text
+    final_prompt: str | list[TextContent | ImageContent] = prompt
+    if file_images:
+        final_prompt = [TextContent(text=prompt), *file_images]
 
     async def before_tool_call(call):  # noqa: ANN001, ANN202 - shape matches agent.core hooks
         if not runner.has_handlers("tool_call"):
@@ -470,7 +520,7 @@ async def _run(
         await _run_agent(
             agent,
             runner,
-            prompt,
+            final_prompt,
             session=session,
             config=config,
             mode=mode,
@@ -490,7 +540,7 @@ async def _run(
 async def _run_agent(
     agent: Agent,
     runner: ExtensionRunner,
-    prompt: str,
+    prompt: str | list[TextContent | ImageContent],
     *,
     session: SessionManager,
     config: ProviderConfig,
